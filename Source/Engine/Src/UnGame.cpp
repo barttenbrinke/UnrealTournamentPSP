@@ -10,6 +10,13 @@
 #ifdef PLATFORM_PSP
 #include "UnPsp.h"
 #endif
+// Level load stage timer (PSPLOAD lines).
+#ifdef PLATFORM_PSP
+static DOUBLE GPspStageT = 0.0;
+#define PSPSTAGE(Name) { const DOUBLE PspNow = appSeconds(); if( GPspStageT > 0.0 ) debugf( NAME_Log, TEXT("PSPLOAD:   %.2f s to %s"), (FLOAT)( PspNow - GPspStageT ), TEXT(Name) ); GPspStageT = PspNow; }
+#else
+#define PSPSTAGE(Name)
+#endif
 // Frame phase timers for the PSP profiling build (see UnPsp.h).
 #if defined(PLATFORM_PSP) && defined(PSP_KEEP_UCLOCK)
 #define PSPPH_BEGIN(p) GPspPhase[p] -= (INT)appCycles();
@@ -657,11 +664,23 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, const TMa
 		FPspLoadTimer( const TCHAR* InMap ) : T0( appSeconds() ), B0( GPspIoBytes ), R0( GPspIoReads ), S0( GPspIoSeeks ), Map( InMap ) {}
 		~FPspLoadTimer()
 		{
+			debugf( NAME_Log, TEXT("PSPLOAD:   %.2f s from purge to done (actors up for play)"), (FLOAT)( appSeconds() - GPspStageT ) );
+			GPspStageT = 0.0;
 			debugf( NAME_Log, TEXT("PSPLOAD: %s in %.1f s: %i KB read in %i reads, %i seeks"), *Map, (FLOAT)( appSeconds() - T0 ),
 				( GPspIoBytes - B0 ) / 1024, GPspIoReads - R0, GPspIoSeeks - S0 );
+			debugf( NAME_Log, TEXT("PSPLOAD:   window leaves: back %i, <1K %i, <4K %i, <16K %i, <64K %i, further %i; reopens %i; cache hits %i misses %i"),
+				GPspSeekHist[0], GPspSeekHist[1], GPspSeekHist[2], GPspSeekHist[3], GPspSeekHist[4], GPspSeekHist[5], GPspIoReopens, GPspCacheHits, GPspCacheMisses );
+			GPspCacheHits = GPspCacheMisses = 0;
+			debugf( NAME_Log, TEXT("PSPLOAD:   file time: opens %.1f s, reads %.1f s"), GPspIoOpenUs / 1e6f, GPspIoReadUs / 1e6f );
+			GPspIoOpenUs = GPspIoReadUs = 0;
+			debugf( NAME_Log, TEXT("PSPLOAD:   phases: preload %.2f s, postload %.2f s, linkers %.2f s"), (FLOAT)GPspLoadPhase[0], (FLOAT)GPspLoadPhase[1], (FLOAT)GPspLoadPhase[2] );
+			appMemzero( GPspLoadPhase, sizeof(GPspLoadPhase) );
+			appPspLoadClassReport( 8 );
+			appMemzero( GPspSeekHist, sizeof(GPspSeekHist) );
 		}
 	} PspLoadTimer( *URL.Map );
 #endif
+	PSPSTAGE("start");
 	guard(UGameEngine::LoadMap);
 	Error = TEXT("");
 	debugf( NAME_Log, TEXT("LoadMap: %s"), *URL.String() );
@@ -755,6 +774,7 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, const TMa
 	unguard;
 
 	// Notify of the level change, before we dissociate Viewport actors
+	PSPSTAGE("verified packages");
 	guard(NotifyLevelChange);
 	if( GLevel )
 		NotifyLevelChange();
@@ -812,6 +832,7 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, const TMa
 	guard(LoadLevel);
 	GLevel = LoadObject<ULevel>( MapParent, TEXT("MyLevel"), *URL.Map, LOAD_NoFail, NULL );
 	unguard;
+	PSPSTAGE("loaded level");
 
 	// If pending network level.
 	if( Pending )
@@ -894,7 +915,9 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, const TMa
 		{for( INT i=0; i<GLevel->Actors.Num(); i++ )
 			if( GLevel->Actors(i) )
 				GLevel->Actors(i)->ClearFlags( RF_EliminateObject );}
+	PSPSTAGE("before purge");
 		CollectGarbage( RF_Native );
+	PSPSTAGE("garbage collected");
 	}
 	unguard;
 

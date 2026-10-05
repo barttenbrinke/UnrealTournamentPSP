@@ -361,6 +361,9 @@ extern "C" DLL_EXPORT char THIS_PACKAGE[];
 #include "UnObjBas.h"		// Object base class.
 #include "UnCoreNet.h"		// Core networking.
 #include "UnCorObj.h"		// Core object class definitions.
+#ifdef PLATFORM_PSP
+#include "UnPsp.h"			// PSP platform helpers and counters.
+#endif
 #include "UnClass.h"		// Class definition.
 #include "UnType.h"			// Base property type.
 #include "UnScript.h"		// Script class.

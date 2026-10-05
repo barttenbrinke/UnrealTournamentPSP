@@ -328,6 +328,9 @@ class ULinkerLoad : public ULinker, public FArchive
 	:	ULinker( InParent, InFilename )
 	,	LoadFlags( InLoadFlags )
 	{
+#ifdef PLATFORM_PSP
+		struct FPspCtorTimer { DOUBLE T0; ~FPspCtorTimer() { GPspLoadPhase[2] += appSeconds() - T0; } } PspCtorTimer = { appSeconds() };
+#endif
 		guard(ULinkerLoad::ULinkerLoad);
 		debugf( TEXT("Loading: %s"), InParent->GetFullName() );
 		Loader = GFileManager->CreateFileReader( InFilename, 0, GError );
@@ -752,7 +755,20 @@ class ULinkerLoad : public ULinker, public FArchive
 				// Load the object.
 				Object->ClearFlags ( RF_NeedLoad );
 				Object->SetFlags   ( RF_Preloading );
+#ifdef PLATFORM_PSP
+				// Per-class load cost (own time only, nested preloads excluded).
+				const DOUBLE PspT0 = appSeconds();
+				const DOUBLE PspChild0 = GPspLoadChildTime;
+#endif
 				Object->Serialize  ( *this );
+#ifdef PLATFORM_PSP
+				{
+					const DOUBLE Total = appSeconds() - PspT0;
+					const DOUBLE Own   = Total - ( GPspLoadChildTime - PspChild0 );
+					GPspLoadChildTime  = PspChild0 + Total;
+					appPspLoadClassTime( Object->GetClass(), Own, Export.SerialSize );
+				}
+#endif
 				Object->ClearFlags ( RF_Preloading );
 				//debugf(NAME_Log,"    %s: %i", Object->GetFullName(), Export.SerialSize );
 

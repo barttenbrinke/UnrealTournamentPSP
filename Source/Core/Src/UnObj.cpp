@@ -2341,6 +2341,9 @@ void UObject::EndLoad()
 		{
 			// Finish loading everything.
 			//warning: Array may expand during iteration.
+#ifdef PLATFORM_PSP
+			const DOUBLE PspT0 = appSeconds();
+#endif
 			guard(PreLoadObjects);
 			debugfSlow( NAME_DevLoad, TEXT("Loading objects...") );
 			for( INT i=0; i<GObjLoaded.Num(); i++ )
@@ -2359,11 +2362,26 @@ void UObject::EndLoad()
 
 			// Postload objects.
 			guard(PostLoadObjects);
+#ifdef PLATFORM_PSP
+			const DOUBLE PspT1 = appSeconds();
+			GPspLoadPhase[0] += PspT1 - PspT0;
+#endif
 			INT OriginalNum = GObjLoaded.Num();
 			for( INT i=0; i<GObjLoaded.Num(); i++ )
+#ifdef PLATFORM_PSP
+			{
+				const DOUBLE T = appSeconds();
 				GObjLoaded(i)->ConditionalPostLoad();
+				appPspPostLoadClassTime( GObjLoaded(i)->GetClass(), appSeconds() - T );
+			}
+#else
+				GObjLoaded(i)->ConditionalPostLoad();
+#endif
 			check(GObjLoaded.Num()==OriginalNum);
 			GObjLoaded.Empty();
+#ifdef PLATFORM_PSP
+			GPspLoadPhase[1] += appSeconds() - PspT1;
+#endif
 			unguard;
 
 			// Dissociate all linker import object references, since they 

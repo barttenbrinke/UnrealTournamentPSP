@@ -91,6 +91,9 @@ public:
 // Set of all cached config files.
 class FConfigCacheIni : public FConfigCache, public TMap<FString,FConfigFile>
 {
+#ifdef PLATFORM_PSP
+	TMap<FString,INT> MissingFiles;   // negative lookups (see Find)
+#endif
 public:
 	// Basic functions.
 	FString SystemIni, UserIni;
@@ -123,11 +126,23 @@ public:
 
 		// Get file.
 		FConfigFile* Result = TMap<FString,FConfigFile>::Find( Filename );
+#ifdef PLATFORM_PSP
+		// Remember files that do not exist. Localising a level's actors asks
+		// for "MyLevel.int" once per localized property (the actor's outer is
+		// the level), and every miss was a Memory Stick stat: ~200 ms per
+		// pickup at level load. A create (CreateIfNotFound) still goes through.
+		if( !Result && !CreateIfNotFound && MissingFiles.Find( Filename ) )
+			return NULL;
+#endif
 		if( !Result && (CreateIfNotFound || GFileManager->FileSize(Filename)>=0)  )
 		{
 			Result = &Set( Filename, FConfigFile() );
 			Result->Read( Filename );
 		}
+#ifdef PLATFORM_PSP
+		if( !Result )
+			MissingFiles.Set( Filename, 1 );
+#endif
 		return Result;
 
 		unguard;

@@ -724,9 +724,24 @@ void AActor::Destroy()
 void AActor::PostLoad()
 {
 	guard(AActor::PostLoad);
+#ifdef PLATFORM_PSP
+	const DOUBLE PspT0 = appSeconds();
+	Super::PostLoad();
+	const DOUBLE PspT1 = appSeconds();
+	if( GetClass()->ClassFlags & CLASS_Localized )
+		LoadLocalized();
+	GPspLoadPhase[3] += appSeconds() - PspT1;
+	static INT Logged = 0;
+	if( appSeconds() - PspT0 > 0.05 && Logged < 6 )
+	{
+		++Logged;
+		debugf( NAME_Log, TEXT("PSPLOAD:   slow PostLoad %s: super %.3f s, localized %.3f s"), GetName(), (FLOAT)( PspT1 - PspT0 ), (FLOAT)( appSeconds() - PspT1 ) );
+	}
+#else
 	Super::PostLoad();
 	if( GetClass()->ClassFlags & CLASS_Localized )
 		LoadLocalized();
+#endif
 	if( Brush )
 		Brush->SetFlags( RF_Transactional );
 	if( Brush && Brush->Polys )

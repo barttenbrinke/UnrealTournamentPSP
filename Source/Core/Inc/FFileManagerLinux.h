@@ -234,6 +234,23 @@ public:
 	// while the reads stay sequential.
 	void Precache( INT HintCount )
 	{
+		// The linker announces each object's size before deserialising it
+		// (ULinkerLoad::Preload): fetch that much in one go, up to
+		// [PSP] PrecacheKB, unless the window already holds it.
+		if( HintCount > 0 && HintCount < MAXINT )
+		{
+			const INT Want = Min( Min( HintCount, appPspPrecacheCap() ), Size-Pos );
+			if( Pos >= BufferBase && Pos + Want <= BufferBase + BufferCount )
+				return;
+			BufferBase  = Pos;
+			BufferCount = Max( Want, Min( NextRefill, Size-Pos ) );
+			if( BufferCount > 0 && appPspRead( File, Pos, Buffer, BufferCount ) != BufferCount )
+			{
+				ArIsError = 1;
+				Error->Logf( TEXT("PSP read failed: Pos=%i Count=%i"), Pos, BufferCount );
+			}
+			return;
+		}
 		const UBOOL Sequential = ( Pos == BufferBase + BufferCount );
 		if( Sequential && BufferCount )
 			NextRefill = Min( NextRefill * 2, (INT)ARRAY_COUNT(Buffer) );
@@ -252,6 +269,9 @@ public:
 		Pos = InPos;
 		if( Pos < BufferBase || Pos > BufferBase+BufferCount )
 		{
+			// Seek profile (PSPLOAD line): how far reads jump outside the window.
+			const INT Jump = Pos - ( BufferBase + BufferCount );
+			GPspSeekHist[ Jump < 0 ? 0 : Jump < 1024 ? 1 : Jump < 4096 ? 2 : Jump < 16384 ? 3 : Jump < 65536 ? 4 : 5 ]++;
 			BufferBase  = Pos;
 			BufferCount = 0;
 			NextRefill  = appPspFirstRefill();
@@ -369,6 +389,8 @@ public:
 		const TCHAR* Mode = (Flags & FILEWRITE_Append) ? TEXT("ab") : TEXT("wb"); 
 #ifdef PLATFORM_PSP
 		FILE* File = fopen(appPspFullPath(Filename),Mode);
+		// Every writer is a kernel handle outside the read pool: log them.
+		printf( "PSPFILE: writer %s %s\n", appPspFullPath(Filename), File ? "open" : "FAILED" );
 #else
 		FILE* File = fopen(TCHAR_TO_ANSI(Filename),TCHAR_TO_ANSI(Mode));
 #endif

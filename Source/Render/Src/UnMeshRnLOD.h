@@ -640,11 +640,12 @@ void URender::DrawLodMesh
 		// (DrawGouraudTris) instead of one RenderSubsurface + driver call
 		// each. Everything else -- clipped, near-clipped, mirrored frames,
 		// environment-mapped or unlit materials -- keeps the stock path.
-		// [PSP] MeshTris=1 (or -MESHTRIS=1) enables it; off until verified on hardware.
+		// [PSP] MeshTris=0 (or -MESHTRIS=0) turns it off. Hardware: submit time
+		// per mesh triangle ~11.5 -> 6-10 us; models verified by screenshot.
 		static INT PspMeshTris = -1;
 		if( PspMeshTris < 0 )
 		{
-			PspMeshTris = 0;
+			PspMeshTris = 1;
 			GConfig->GetInt( TEXT("PSP"), TEXT("MeshTris"), PspMeshTris );
 			Parse( appCmdLine(), TEXT("MESHTRIS="), PspMeshTris );
 		}

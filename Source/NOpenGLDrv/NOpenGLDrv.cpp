@@ -380,6 +380,7 @@ static DWORD GPspFrameCount = 0;
 // interval (microseconds; appCycles ticks in us on the PSP).
 static SQWORD GPspProf[16];
 enum { PP_Occl, PP_Clip, PP_Raster, PP_Span, PP_Box, PP_PolyV, PP_Mesh, PP_MeshFrame, PP_MeshProc, PP_MeshLight, PP_MeshSub, PP_MeshClip, PP_MeshTmap, PP_Illum, PP_Tick, PP_Game };
+static SQWORD GPspProfMeshPolys = 0;
 #endif
 static DWORD GPspUploadCount = 0;
 static DWORD GPspUploadLast  = 0;
@@ -761,6 +762,9 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				debugf( NAME_Log, "PSPPROF: ms/frame: game %.1f (tick %.1f) | occl %.1f (clip %.1f raster %.1f span %.1f box %.1f) | surfs %.1f | mesh %.1f (frame %.1f proc %.1f light %.1f sub %.1f clip %.1f tmap %.1f) | illum %.1f",
 					PPMS(PP_Game), PPMS(PP_Tick), PPMS(PP_Occl), PPMS(PP_Clip), PPMS(PP_Raster), PPMS(PP_Span), PPMS(PP_Box), PPMS(PP_PolyV),
 					PPMS(PP_Mesh), PPMS(PP_MeshFrame), PPMS(PP_MeshProc), PPMS(PP_MeshLight), PPMS(PP_MeshSub), PPMS(PP_MeshClip), PPMS(PP_MeshTmap), PPMS(PP_Illum) );
+				debugf( NAME_Log, "PSPPROF: mesh tris %d/frame, tmap %.2f us per tri, mesh %.2f us per tri", (INT)( GPspProfMeshPolys / 100 ),
+					GPspProfMeshPolys ? (FLOAT)GPspProf[PP_MeshTmap] / GPspProfMeshPolys : 0.f, GPspProfMeshPolys ? (FLOAT)GPspProf[PP_Mesh] / GPspProfMeshPolys : 0.f );
+				GPspProfMeshPolys = 0;
 				debugf( NAME_Log, "PSPPROF: phases ms/frame: world %.1f hud %.1f console %.1f unlock/swap %.1f audio %.1f",
 					GPspPhase[PSPPH_World]/100000.f, GPspPhase[PSPPH_Hud]/100000.f, GPspPhase[PSPPH_Console]/100000.f, GPspPhase[PSPPH_Unlock]/100000.f, GPspPhase[PSPPH_Audio]/100000.f );
 				appMemzero( GPspPhase, sizeof(GPspPhase) );
@@ -831,6 +835,7 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	GPspProf[PP_Mesh] += GStat.MeshTime; GPspProf[PP_MeshFrame] += GStat.MeshGetFrameTime; GPspProf[PP_MeshProc] += GStat.MeshProcessTime;
 	GPspProf[PP_MeshLight] += GStat.MeshLightTime + GStat.MeshLightSetupTime; GPspProf[PP_MeshSub] += GStat.MeshSubTime;
 	GPspProf[PP_MeshClip] += GStat.MeshClipTime; GPspProf[PP_MeshTmap] += GStat.MeshTmapTime; GPspProf[PP_Illum] += GStat.IllumTime;
+	GPspProfMeshPolys += GStat.MeshPolyCount;
 	if( Viewport && Viewport->GetOuterUClient() && Viewport->GetOuterUClient()->Engine )
 	{
 		UEngine* E = Viewport->GetOuterUClient()->Engine;

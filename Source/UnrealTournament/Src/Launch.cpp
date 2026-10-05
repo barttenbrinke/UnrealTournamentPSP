@@ -102,8 +102,9 @@ static void PspOnBadAlloc()
 	sceKernelExitGame();
 }
 
-static void PspPreInit( const char* Launcher )
+static void PspPreInit( int argc, char** argv )
 {
+	const char* Launcher = argc > 0 ? argv[0] : NULL;
 	// UE divides by zero and underflows freely; the PSP FPU traps on those
 	// instead of producing inf/NaN. Mask the exceptions.
 	pspSdkDisableFPUExceptions();
@@ -114,6 +115,11 @@ static void PspPreInit( const char* Launcher )
 	// Console builds skip the argv[0] module name: name the log and ini.
 	appStrcpy( GModule, "UnrealTournament" );
 	PspRootFromLauncher( Launcher );
+	// -ROOT=<dir>/ (PSPLink runs): take the game data from elsewhere, e.g.
+	// "host0:/UnrealTournament/System/" to serve it from the PC over USB.
+	for( int i = 1; i < argc; i++ )
+		if( !strncmp( argv[i], "-ROOT=", 6 ) && strlen( argv[i] + 6 ) < sizeof(GPspRoot) )
+			strcpy( GPspRoot, argv[i] + 6 );
 	if( chdir( GPspRoot ) < 0 )
 		printf( "Could not chdir to %s\n", GPspRoot );
 }
@@ -463,7 +469,7 @@ int CleanUpOnExit(int ErrorLevel)
 int main( int argc, char* argv[] )
 {
 #ifdef PLATFORM_PSP
-	PspPreInit( argc > 0 ? argv[0] : NULL );
+	PspPreInit( argc, argv );
 #endif
 #ifdef PLATFORM_DREAMCAST
 	// fix thread stack underrun

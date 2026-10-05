@@ -74,3 +74,8 @@ if(PSP)
     VERSION 01.00
   )
 endif()
+
+if(PSP AND PSPLINK)
+  # PSPLink-only GE/draw hooks in NOpenGLDrv.cpp (-HALTDRAW, -NOGE, -SYNCGE, -DUMPGE).
+  target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=glDrawArrays,--wrap=sceGeListEnQueue,--wrap=sceGeListSync,--wrap=sceGeDrawSync)
+endif()

@@ -72,8 +72,11 @@ extern "C" int __wrap_sceGeListEnQueue( const void* List, void* Stall, int CbId,
 	++GPspGeLists;
 	const DWORD* W = (const DWORD*)List;
 	INT Len = ( (const DWORD*)Stall - W ) + 1;
-	printf( "PSPGE: enqueue #%d list=%p len=%d\n", GPspGeLists, List, Len );
-	fflush( stdout );
+	if( GPspDumpGe || GPspSyncGe || GPspNoGe )
+	{
+		printf( "PSPGE: enqueue #%d list=%p len=%d\n", GPspGeLists, List, Len );
+		fflush( stdout );
+	}
 	if( GPspDumpGe )
 	{
 		// Every list, raw, to the host BEFORE the GE runs it, so the one that

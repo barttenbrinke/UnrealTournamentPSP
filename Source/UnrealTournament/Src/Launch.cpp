@@ -6,6 +6,11 @@ Revision history:
 	* Created by Brandon Reinhart.
 =============================================================================*/
 
+#ifdef PLATFORM_PSP
+// Before the engine headers: UE declares its own operator delete.
+#include <exception>
+#include <new>
+#endif
 #include "LaunchPrivate.h"
 #ifdef PLATFORM_SDL
 #include <SDL2/SDL.h>
@@ -38,6 +43,74 @@ FFileManagerLinux FileManager;
 
 // Config.
 #include "FConfigCacheIni.h"
+
+#ifdef PLATFORM_PSP
+#include <pspkernel.h>
+#include <psppower.h>
+#include <pspsdk.h>
+#include <pspiofilemgr.h>
+#include <unistd.h>
+
+// Main thread stack. UE's package loading and renderer recurse deeply and
+// FOutputDevice::Logf puts a 4KB buffer on the stack at every level; the
+// Unreal port died with 1MB. pspsdk looks this symbol up by name.
+extern "C" { unsigned int sce_newlib_stack_kb_size = 4096; }
+// Heap: everything except 1MB for pspgl and the kernel.
+extern "C" { int sce_newlib_heap_kb_size = -1024; }
+
+// The engine runs from inside System/, like UnrealTournament.exe on PC: the
+// ini search paths are relative to it ("../Maps/*.unr"). The game data lives
+// beside the EBOOT, so take the folder from argv[0] ("ms0:/PSP/GAME/<x>/EBOOT.PBP",
+// "ef0:/..." on a PSP go). A PSPLink run ("host0:/...") keeps the default.
+static char GPspRoot[256] = "ms0:/PSP/GAME/UnrealTournament/System/";
+static void PspRootFromLauncher( const char* Launcher )
+{
+	if( !Launcher || ( strncmp( Launcher, "ms0:/", 5 ) && strncmp( Launcher, "ef0:/", 5 ) ) )
+		return;
+	const char* Slash = strrchr( Launcher, '/' );
+	if( !Slash )
+		return;
+	const size_t DirLen = (size_t)( Slash + 1 - Launcher );
+	if( DirLen + sizeof("System/") > sizeof(GPspRoot) )
+		return;
+	memcpy( GPspRoot, Launcher, DirLen );
+	strcpy( GPspRoot + DirLen, "System/" );
+}
+
+// The ways a PSP process can die without writing anything. A user-mode EBOOT
+// cannot install a CPU exception handler (that needs kernel imports, and the
+// loader rejects the EBOOT with 8002013C), so catch what the C++ runtime offers.
+static void PspSyncLog()
+{
+	sceIoSync( "ms0:", 0 );
+}
+static void PspOnTerminate()
+{
+	debugf( TEXT("PSPDEATH: std::terminate -- unhandled exception") );
+	PspSyncLog();
+	sceKernelExitGame();
+}
+static void PspOnBadAlloc()
+{
+	debugf( TEXT("PSPDEATH: operator new failed (out of memory)") );
+	PspSyncLog();
+	sceKernelExitGame();
+}
+
+static void PspPreInit( const char* Launcher )
+{
+	// UE divides by zero and underflows freely; the PSP FPU traps on those
+	// instead of producing inf/NaN. Mask the exceptions.
+	pspSdkDisableFPUExceptions();
+	std::set_terminate( PspOnTerminate );
+	std::set_new_handler( PspOnBadAlloc );
+	// Homebrew starts at 222MHz unless asked.
+	scePowerSetClockFrequency( 333, 333, 166 );
+	PspRootFromLauncher( Launcher );
+	if( chdir( GPspRoot ) < 0 )
+		printf( "Could not chdir to %s\n", GPspRoot );
+}
+#endif
 
 #ifdef PLATFORM_DREAMCAST
 #include <kos.h>
@@ -166,7 +239,11 @@ void HandleError( const char* Exception )
 	debugf( NAME_Exit, "Shutting down after catching exception" );
 	debugf( NAME_Exit, "Exiting due to exception" );
 	GErrorHist[ARRAY_COUNT(GErrorHist)-1]=0;
-#ifdef PLATFORM_SDL
+#ifdef PLATFORM_PSP
+	// SDL's PSP message box cannot run here (the GL context owns the display);
+	// the log has the details. Make sure they reach the card.
+	PspSyncLog();
+#elif defined(PLATFORM_SDL)
 	SDL_ShowSimpleMessageBox( SDL_MESSAGEBOX_ERROR, LocalizeError("Critical"), GErrorHist, SDL_GetKeyboardFocus() );
 #elif defined(PLATFORM_DREAMCAST)
 	if( Exception )
@@ -295,6 +372,9 @@ int CleanUpOnExit(int ErrorLevel)
 //
 int main( int argc, char* argv[] )
 {
+#ifdef PLATFORM_PSP
+	PspPreInit( argc > 0 ? argv[0] : NULL );
+#endif
 #ifdef PLATFORM_DREAMCAST
 	// fix thread stack underrun
 	init_thread_stack();
@@ -324,7 +404,7 @@ int main( int argc, char* argv[] )
 	
 	INT ErrorLevel = 0;
 	GIsStarted	   = 1;
-#ifndef PLATFORM_DREAMCAST
+#if !defined(PLATFORM_DREAMCAST) && !defined(PLATFORM_PSP)
 	// Set module name.
 	appStrcpy( GModule, argv[0] );
 
@@ -340,7 +420,7 @@ int main( int argc, char* argv[] )
 			appStrcat( CmdLine, " " );
 		appStrcat( CmdLine, argv[i] );
 	}
-#ifndef PLATFORM_DREAMCAST
+#if !defined(PLATFORM_DREAMCAST) && !defined(PLATFORM_PSP)
 	// Take care of .ini swapping.
 	TCHAR userconfig[PATH_MAX] = TEXT("");
 	sprintf(userconfig, "~/.utconf");
@@ -371,7 +451,8 @@ int main( int argc, char* argv[] )
 	GIsClient		= !ParseParam(appCmdLine(), TEXT("SERVER"));
 	GIsEditor		= 0;
 	GIsScriptable	= 1;
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
+	// Load package objects on demand rather than whole packages up front.
 	GLazyLoad  		= 1;
 #else
 	GLazyLoad		= !GIsClient || ParseParam(appCmdLine(), TEXT("LAZY"));

@@ -37,6 +37,16 @@ set(DREAMCAST_CDI_OUTPUT "${CMAKE_SOURCE_DIR}/../UnrealTournament.cdi" CACHE FIL
 set(DREAMCAST_IP_TXT "${CMAKE_SOURCE_DIR}/ip.txt" CACHE FILEPATH "Path to ip.txt template for makeip")
 set(DREAMCAST_ELF_FILE "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/UnrealTournament.elf" CACHE FILEPATH "Path to Unreal ELF used for mkdcdisc")
 
+if(PSP)
+  # One static binary, fixed-function GL through pspgl, our own audio driver.
+  set(BUILD_STATIC ON)
+  set(LOW_MEMORY ON)
+  set(BUILD_EDITOR OFF)
+  set(BUILD_DCUTIL OFF)
+  set(BUILD_NULLSOUNDDRV OFF)
+  set(BUILD_NOPENGLDRV ON)
+endif()
+
 if(PLATFORM_DREAMCAST)
   set(BUILD_STATIC ON)
   set(USE_SDL OFF)
@@ -97,6 +107,9 @@ endif()
 
 if(PLATFORM_DREAMCAST)
   set(TARGET_ARCH "sh4")
+endif()
+if(PSP)
+  set(TARGET_ARCH "mips")
 endif()
 
 message(STATUS "Target arch: ${TARGET_ARCH}")
@@ -190,7 +203,11 @@ if(TARGET_IS_WINDOWS)
 else()
   # TODO
   add_definitions(-DPLATFORM_POSIX)
-  if(NOT TARGET_IS_DREAMCAST)
+  if(PSP)
+    # The Memory Stick is FAT (case-insensitive); PLATFORM_CASE_SENSITIVE_FS
+    # would also drag in strcasestr(), which newlib lacks.
+    add_definitions(-DPLATFORM_PSP)
+  elseif(NOT TARGET_IS_DREAMCAST)
     add_definitions(-DPLATFORM_CASE_SENSITIVE_FS)
   endif()
   if(TARGET_IS_DREAMCAST)
@@ -228,6 +245,20 @@ else()
   endif()
   add_compile_options(-ffunction-sections -fno-strict-aliasing)
   add_compile_options(-Wno-write-strings -Wno-terminate)
+
+  if(PSP)
+    # The PSP FPU is single precision only: unsuffixed literals would turn
+    # float math into soft-float double calls in the hottest loops.
+    add_compile_options(-fsingle-precision-constant -fno-math-errno)
+    add_compile_options(-mno-check-zero-division)
+    # Keep RA honest for PSPLink crash dumps and psp-addr2line.
+    add_compile_options(-g -fno-optimize-sibling-calls)
+    add_compile_options(-Wno-narrowing -Wno-register -fpermissive)
+    option(PSPLINK "Mirror the log to stdout for PSPLink/pspsh" OFF)
+    if(PSPLINK)
+      add_definitions(-DPSP_PSPLINK=1)
+    endif()
+  endif()
 endif()
 
 # Dependencies
@@ -277,11 +308,11 @@ else(TARGET_IS_DREAMCAST)
 endif()
 
 if(BUILD_NOPENGLDRV)
-  add_subdirectory(OpenGLDrv)
-  list(APPEND INSTALL_TARGETS OpenGLDrv)
+  add_subdirectory(NOpenGLDrv)
+  list(APPEND INSTALL_TARGETS NOpenGLDrv)
 endif()
 
-if(NOT PLATFORM_DREAMCAST)
+if(NOT PLATFORM_DREAMCAST AND NOT PSP)
   add_subdirectory(NOpenGLESDrv)
   list(APPEND INSTALL_TARGETS NOpenGLESDrv)
 endif()

@@ -345,7 +345,7 @@ void UObject::execBoolVariable( FFrame& Stack, RESULT_DECL )
 
 	// Get bool variable.
 	BYTE B = *Stack.Code++;
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	UBoolProperty* Property;
 	__builtin_memcpy( &Property, Stack.Code, sizeof( Property ) );
 #else
@@ -2220,7 +2220,7 @@ IMPLEMENT_FUNCTION( UObject, EX_RotationConst, execRotationConst );
 void UObject::execVectorConst( FFrame& Stack, RESULT_DECL )
 {
 	guardSlow(UObject::execVectorConst);
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	FVector Temp;
 	__builtin_memcpy(&Temp, Stack.Code, sizeof(FVector));
 	*(FVector*)Result = Temp;

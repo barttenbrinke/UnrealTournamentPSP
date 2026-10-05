@@ -1068,7 +1068,7 @@ CORE_API FArchive& operator<<( FArchive& Ar, FLabelEntry &Label )
 /*-----------------------------------------------------------------------------
 	UStruct implementation.
 -----------------------------------------------------------------------------*/
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 template<typename T>
 static inline void XferAligned( FArchive& Ar, T* Ptr )
 {
@@ -1094,7 +1094,7 @@ EExprToken UStruct::SerializeExpr( INT& iCode, FArchive& Ar )
 {
 	EExprToken Expr=(EExprToken)0;
 	guard(SerializeExpr);
-	#ifdef PLATFORM_DREAMCAST
+	#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	#define XFER(T) {XferAligned(Ar, (T*)&Script(iCode)); iCode += sizeof(T);}
 	#else
 	#define XFER(T) {Ar << *(T*)&Script(iCode); iCode += sizeof(T); }
@@ -1291,7 +1291,7 @@ EExprToken UStruct::SerializeExpr( INT& iCode, FArchive& Ar )
 		}
 		case EX_Case:
 		{
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 			// avoid unaligned access
 			_WORD W;
 			__builtin_memcpy( &W, &Script(iCode), sizeof( W ) );

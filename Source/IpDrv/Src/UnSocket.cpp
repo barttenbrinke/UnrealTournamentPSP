@@ -100,7 +100,11 @@ UBOOL InitSockets( FString& Error )
 		}
 	}
 #elif __BSD_SOCKETS__
+#ifdef PLATFORM_PSP
+	GInitialized = 0;	// inert: see UnSocket.h
+#else
 	GInitialized = 1;
+#endif
 #endif
 
 	return GInitialized;

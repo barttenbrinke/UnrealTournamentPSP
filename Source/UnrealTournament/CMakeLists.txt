@@ -51,3 +51,22 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE UNREAL_EXPORTS UPACKAGE_NAME=
 if(TARGET_IS_DREAMCAST AND DREAMCAST_USE_FATFS)
   target_link_libraries(${PROJECT_NAME} fatfs)
 endif()
+
+if(PSP)
+  # Mirrors `psp-pkg-config --libs sdl2`, plus pspgl and the C++ runtime.
+  # SDL2 #defines main -> SDL_main, so SDL2main supplies the real entry point.
+  target_link_libraries(${PROJECT_NAME}
+    -Wl,--whole-archive pthread -Wl,--no-whole-archive
+    SDL2main SDL2
+    GLU GL
+    pspvram pspaudio pspvfpu pspdisplay pspgu pspge
+    psphprm pspctrl psppower psprtc
+    stdc++ m
+  )
+  # MEMSIZE=1 in PARAM.SFO claims the PSP-2000's extra 32MB.
+  create_pbp_file(
+    TARGET ${PROJECT_NAME}
+    TITLE "Unreal Tournament"
+    VERSION 01.00
+  )
+endif()

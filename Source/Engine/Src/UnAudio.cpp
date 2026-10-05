@@ -98,7 +98,7 @@ void FSoundData::Load()
 		if( Owner->Audio && !GIsEditor )
 		{
 			Owner->Audio->RegisterSound( Owner );
-#if defined(PLATFORM_DREAMCAST)
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 			// On Dreamcast, once the audio backend has uploaded the sample
 			// into AICA RAM we do not need to keep another copy in system RAM.
 			//Empty();
@@ -121,7 +121,7 @@ FLOAT FSoundData::GetPeriod()
 	if( WaveInfo.ReadWaveInfo(*this) )
 	{
 		#define DEFAULT_FREQUENCY (22050)
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 		INT SPS, Channels, BitsPerSample, WaveDataSize;
 		__builtin_memcpy( &SPS, WaveInfo.pSamplesPerSec, sizeof(INT) );
 		__builtin_memcpy( &Channels, WaveInfo.pChannels, sizeof(INT) );
@@ -188,7 +188,7 @@ IMPLEMENT_CLASS(USound);
 //
 UBOOL FWaveModInfo::ReadWaveInfo( TArray<BYTE>& WavData )
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	guard(FWaveModInfo::ReadWaveInfo);
 
 	if( WavData.Num() < (INT)sizeof(FRiffWaveHeader) )
@@ -370,7 +370,7 @@ UBOOL FWaveModInfo::ReadWaveInfo( TArray<BYTE>& WavData )
 //
 UBOOL FWaveModInfo::UpdateWaveData( TArray<BYTE>& WavData )
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	guard(FWaveModInfo::UpdateWaveData);
 	if( NewDataSize < SampleDataSize )
 	{		

@@ -210,12 +210,131 @@ protected:
 	BYTE			Buffer[4096];
 };
 
+#ifdef PLATFORM_PSP
+#include "UnPsp.h"
+// Reader on the pooled sceIo layer (UnPspFile.cpp) with a 16KB read window:
+// UT deserializes a few bytes at a time and every sceIoRead is a syscall into
+// the Memory Stick driver.
+class FArchivePspReader : public FArchive
+{
+public:
+	FArchivePspReader( FPspFile* InFile, FOutputDevice* InError )
+	:	File( InFile ), Error( InError ), Size( appPspSize(InFile) ), Pos( 0 ), BufferBase( 0 ), BufferCount( 0 )
+	{
+		ArIsLoading = ArIsPersistent = 1;
+	}
+	~FArchivePspReader()
+	{
+		if( File )
+			Close();
+	}
+	void Precache( INT HintCount )
+	{
+		BufferBase  = Pos;
+		BufferCount = Min( (INT)ARRAY_COUNT(Buffer), Size-Pos );
+		if( BufferCount > 0 && appPspRead( File, Pos, Buffer, BufferCount ) != BufferCount )
+		{
+			ArIsError = 1;
+			Error->Logf( TEXT("PSP read failed: Pos=%i Count=%i"), Pos, BufferCount );
+		}
+	}
+	void Seek( INT InPos )
+	{
+		check(InPos>=0);
+		check(InPos<=Size);
+		Pos = InPos;
+		if( Pos < BufferBase || Pos > BufferBase+BufferCount )
+		{
+			BufferBase  = Pos;
+			BufferCount = 0;
+		}
+	}
+	INT Tell()
+	{
+		return Pos;
+	}
+	INT TotalSize()
+	{
+		return Size;
+	}
+	UBOOL Close()
+	{
+		if( File )
+			appPspClose( File );
+		File = NULL;
+		return !ArIsError;
+	}
+	void Serialize( void* V, INT Length )
+	{
+		while( Length>0 )
+		{
+			INT Copy = Min( Length, BufferBase+BufferCount-Pos );
+			if( Copy<=0 )
+			{
+				if( Length >= ARRAY_COUNT(Buffer) )
+				{
+					if( appPspRead( File, Pos, V, Length ) != Length )
+					{
+						ArIsError = 1;
+						Error->Logf( TEXT("PSP read failed: Pos=%i Length=%i"), Pos, Length );
+					}
+					Pos += Length;
+					BufferBase  = Pos;
+					BufferCount = 0;
+					return;
+				}
+				Precache( MAXINT );
+				Copy = Min( Length, BufferBase+BufferCount-Pos );
+				if( Copy<=0 )
+				{
+					ArIsError = 1;
+					Error->Logf( TEXT("ReadFile beyond EOF %i+%i/%i"), Pos, Length, Size );
+				}
+				if( ArIsError )
+					return;
+			}
+			appMemcpy( V, Buffer+Pos-BufferBase, Copy );
+			Pos       += Copy;
+			Length    -= Copy;
+			V          = (BYTE*)V + Copy;
+		}
+	}
+protected:
+	FPspFile*		File;
+	FOutputDevice*	Error;
+	INT				Size;
+	INT				Pos;
+	INT				BufferBase;
+	INT				BufferCount;
+	BYTE			Buffer[16384];
+};
+#endif
+
 class FFileManagerLinux : public FFileManagerGeneric
 {
 public:
+#ifdef PLATFORM_PSP
+	// Never open a file just to measure it: that spends a kernel handle.
+	INT FileSize( const TCHAR* Filename )
+	{
+		return appPspStatSize( Filename );
+	}
+#endif
 	FArchive* CreateFileReader( const TCHAR* Filename, DWORD Flags, FOutputDevice* Error )
 	{
 		guard(FFileManagerLinux::CreateFileReader);
+#ifdef PLATFORM_PSP
+		{
+			FPspFile* PspFile = appPspOpen( Filename );
+			if( !PspFile )
+			{
+				if( Flags & FILEREAD_NoFail )
+					appErrorf(TEXT("Failed to read file: %s"),Filename);
+				return NULL;
+			}
+			return new(TEXT("PspFileReader"))FArchivePspReader(PspFile,Error);
+		}
+#endif
 		FILE* File = fopen(TCHAR_TO_ANSI(Filename), TCHAR_TO_ANSI(TEXT("rb")));
 		if( !File )
 		{
@@ -232,14 +351,18 @@ public:
 		guard(FFileManagerLinux::CreateFileWriter);
 		if( Flags & FILEWRITE_EvenIfReadOnly )
 		{
-#ifndef PLATFORM_DREAMCAST
+#if !defined(PLATFORM_DREAMCAST) && !defined(PLATFORM_PSP)
 			chmod(TCHAR_TO_ANSI(Filename), S_IRUSR | S_IWUSR);
 #endif
 		}
 		if( (Flags & FILEWRITE_NoReplaceExisting) && FileSize(Filename)>=0 )
 			return NULL;
 		const TCHAR* Mode = (Flags & FILEWRITE_Append) ? TEXT("ab") : TEXT("wb"); 
+#ifdef PLATFORM_PSP
+		FILE* File = fopen(appPspFullPath(Filename),Mode);
+#else
 		FILE* File = fopen(TCHAR_TO_ANSI(Filename),TCHAR_TO_ANSI(Mode));
+#endif
 		if( !File )
 		{
 			if( Flags & FILEWRITE_NoFail )
@@ -256,10 +379,13 @@ public:
 		guard(FFileManagerLinux::Delete);
 		if( EvenReadOnly )
 		{
-#ifndef PLATFORM_DREAMCAST
+#if !defined(PLATFORM_DREAMCAST) && !defined(PLATFORM_PSP)
 			chmod(TCHAR_TO_ANSI(Filename), S_IRUSR | S_IWUSR);
 #endif
 		}
+#ifdef PLATFORM_PSP
+		return unlink(appPspFullPath(Filename))==0 || (errno==ENOENT && !RequireExists);
+#endif
 		return unlink(TCHAR_TO_ANSI(Filename))==0 || (errno==ENOENT && !RequireExists);
 		unguard;
 	}

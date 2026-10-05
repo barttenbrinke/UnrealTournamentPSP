@@ -958,7 +958,7 @@ void UObject::ResetConfig( UClass* Class )
 		SrcFilename = TEXT("DefUser.ini");
 	else
 		return;
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	TCHAR Buffer[8192];
 #else
 	TCHAR Buffer[32767];
@@ -2281,7 +2281,7 @@ UObject* UObject::LoadPackage( UObject* InOuter, const TCHAR* Filename, DWORD Lo
 		// Create a new linker object which goes off and tries load the file.
 		ULinkerLoad* Linker = GetPackageLinker( InOuter, Filename ? Filename : InOuter->GetName(), LoadFlags | LOAD_Throw, NULL, NULL );
 		if( !(LoadFlags & LOAD_Verify) )
-#ifndef PLATFORM_DREAMCAST
+#if !defined(PLATFORM_DREAMCAST) && !defined(PLATFORM_PSP)
 			Linker->LoadAllObjects();
 #endif
 		Result = Linker->LinkerRoot;
@@ -3522,7 +3522,7 @@ void UObject::ParseParms( const TCHAR* Parms )
 void UObject::CacheDrivers( UBOOL ForceRefresh )
 {
 	guard(UObject::CacheDrivers);
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	TCHAR Buffer[8192];
 #else
 	TCHAR Buffer[32767];

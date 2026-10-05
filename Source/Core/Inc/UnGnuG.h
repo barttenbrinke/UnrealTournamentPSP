@@ -121,13 +121,24 @@ enum {CACHE_LINE_SIZE   = 32}; // Cache line size.
 // Unsigned base types.
 typedef uint8_t				BYTE;		// 8-bit  unsigned.
 typedef uint16_t			_WORD;		// 16-bit unsigned.
+#ifdef PLATFORM_PSP
+// psp-gcc's newlib spells int32_t as 'long int'. Same width, but a distinct
+// type to overload resolution, so declarations stop matching definitions
+// written with plain int. Spell them as they resolve on x86 and ARM.
+typedef unsigned int		DWORD;		// 32-bit unsigned.
+#else
 typedef uint32_t 			DWORD;		// 32-bit unsigned.
+#endif
 typedef uint64_t 			QWORD;		// 64-bit unsigned.
 
 // Signed base types.
 typedef	int8_t				SBYTE;		// 8-bit  signed.
 typedef int16_t  			SWORD;		// 16-bit signed.
+#ifdef PLATFORM_PSP
+typedef int					INT;		// 32-bit signed.
+#else
 typedef int32_t    			INT;		// 32-bit signed.
+#endif
 typedef int64_t  			SQWORD;		// 64-bit signed.
 
 // Character types.
@@ -137,7 +148,11 @@ typedef uint8_t				ANSICHARU;	// An ANSI character.
 typedef uint16_t     		UNICHARU;	// A unicode character.
 
 // Other base types.
+#ifdef PLATFORM_PSP
+typedef int					UBOOL;		// Boolean 0 (false) or 1 (true).
+#else
 typedef int32_t				UBOOL;		// Boolean 0 (false) or 1 (true).
+#endif
 typedef float				FLOAT;		// 32-bit IEEE floating point.
 typedef double				DOUBLE;		// 64-bit IEEE double.
 typedef size_t        		SIZE_T;     // Corresponds to C SIZE_T.

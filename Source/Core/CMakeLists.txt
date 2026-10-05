@@ -29,6 +29,10 @@ if(BUILD_STATIC)
   list(APPEND SRC_FILES "Src/UnStaticExports.cpp")
 endif()
 
+if(PSP)
+  list(APPEND SRC_FILES "Src/UnPspFile.cpp")
+endif()
+
 if(TARGET_IS_DREAMCAST AND DREAMCAST_USE_FILE_POOL)
   list(APPEND SRC_FILES "Src/UnFilePool.cpp")
 endif()

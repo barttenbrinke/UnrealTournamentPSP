@@ -35,8 +35,11 @@ Revision history:
 	#include <netinet/in.h>
 	#include <arpa/inet.h>
 	#include <netdb.h>
+#ifndef PLATFORM_PSP
+	// The PSP SDK ships every other BSD sockets header, but not these two.
 	#include <sys/uio.h>
 	#include <sys/ioctl.h>
+#endif
 	#include <sys/time.h>
 	#include <errno.h>
 	#include <pthread.h>

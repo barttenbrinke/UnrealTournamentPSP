@@ -681,7 +681,11 @@ CORE_API const TCHAR* appUserName()
 	guard(appUserName);
 	static TCHAR Result[256]="";
 	if( !Result[0] )
+#ifdef PLATFORM_PSP
+		appStrncpy( Result, TEXT("Player"), sizeof(Result) );
+#else
 		appStrncpy( Result, getlogin(), sizeof(Result) );
+#endif
 	return Result;
 	unguard;
 }

@@ -1,0 +1,4 @@
+build-psp*/
+GAME_ASSETS/
+GAME_ASSETS_SRC/
+.DS_Store

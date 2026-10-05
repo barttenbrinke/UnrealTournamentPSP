@@ -120,7 +120,7 @@ inline void FFrame::Step( UObject* Context, RESULT_DECL )
 }
 inline INT FFrame::ReadInt()
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	INT Result;
 	__builtin_memcpy( &Result, Code, sizeof( Result ) );
 #else
@@ -131,7 +131,7 @@ inline INT FFrame::ReadInt()
 }
 inline UObject* FFrame::ReadObject()
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	UObject* Result;
 	__builtin_memcpy( &Result, Code, sizeof( Result ) );
 #else
@@ -142,7 +142,7 @@ inline UObject* FFrame::ReadObject()
 }
 inline FLOAT FFrame::ReadFloat()
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	FLOAT Result;
 	__builtin_memcpy( &Result, Code, sizeof( Result ) );
 #else
@@ -153,7 +153,7 @@ inline FLOAT FFrame::ReadFloat()
 }
 inline INT FFrame::ReadWord()
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	_WORD Result;
 	__builtin_memcpy( &Result, Code, sizeof( Result ) );
 #else
@@ -164,7 +164,7 @@ inline INT FFrame::ReadWord()
 }
 inline FName FFrame::ReadName()
 {
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	FName Result;
 	__builtin_memcpy( &Result, Code, sizeof( Result ) );
 #else

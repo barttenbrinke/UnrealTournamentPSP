@@ -256,7 +256,7 @@ void FCollisionHash::RemoveActor( AActor* Actor )
 	check(Actor->bCollideActors);
 	if( Actor->bDeleteMe )
 		return;
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	UBOOL bAdjustedLocation = 0;
 	FVector SavedLocation = Actor->Location;
 	if( Actor->Location!=Actor->ColLocation )
@@ -300,7 +300,7 @@ void FCollisionHash::RemoveActor( AActor* Actor )
 		}
 	}
 	CheckActorNotReferenced( Actor );
-#ifdef PLATFORM_DREAMCAST
+#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
 	if( bAdjustedLocation )
 	{
 		// Restore actor transform and update collision location to current to keep hash consistent.

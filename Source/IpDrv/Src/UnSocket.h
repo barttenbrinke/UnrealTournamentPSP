@@ -75,6 +75,55 @@ static inline int ioctlsocket( int fd, int opt, void* val )
 
 #endif
 
+#ifdef PLATFORM_PSP
+//
+// PSP: networking is compiled in but deliberately inert (as in the Unreal
+// PSP port). The IpDrv classes must register so UT's packages load, but the
+// PSP network stack has to be brought up explicitly before ANY socket call:
+// libcglue's socket()/bind()/inet_addr() go straight to sceNetInet*, and
+// calling them uninitialised is a kernel fault that reboots the console.
+// Every operation reports failure instead, which the engine already handles
+// as "no network available". These macros come after the system headers, so
+// the real declarations are untouched.
+//
+#ifndef INADDR_NONE
+#define INADDR_NONE 0xffffffffU
+#endif
+#ifndef ESOCKTNOSUPPORT
+#define ESOCKTNOSUPPORT 44
+#endif
+#ifndef ESHUTDOWN
+#define ESHUTDOWN 58
+#endif
+#ifndef EUSERS
+#define EUSERS 68
+#endif
+#ifndef EREMOTE
+#define EREMOTE 71
+#endif
+#undef  closesocket
+#define closesocket( fd )                   ( 0 )
+#undef  ioctlsocket
+#define ioctlsocket( fd, opt, arg )         ( -1 )
+#define socket( af, type, proto )           ( -1 )
+#define bind( fd, addr, len )               ( -1 )
+#define connect( fd, addr, len )            ( -1 )
+#define listen( fd, backlog )               ( -1 )
+#define accept( fd, addr, len )             ( -1 )
+#define setsockopt( a, b, c, d, e )         ( -1 )
+#define getsockopt( a, b, c, d, e )         ( -1 )
+#define getsockname( a, b, c )              ( -1 )
+#define send( a, b, c, d )                  ( -1 )
+#define recv( a, b, c, d )                  ( -1 )
+#define sendto( a, b, c, d, e, f )          ( -1 )
+#define recvfrom( a, b, c, d, e, f )        ( -1 )
+#define select( a, b, c, d, e )             ( -1 )
+#define gethostbyname( name )               ( (HOSTENT*)0 )
+#define gethostbyaddr( a, b, c )            ( (HOSTENT*)0 )
+#define inet_addr( str )                    ( 0xffffffffU )
+#define gethostname( name, len )            ( -1 )
+#endif
+
 /*----------------------------------------------------------------------------
 	Functions.
 ----------------------------------------------------------------------------*/

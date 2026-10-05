@@ -567,6 +567,16 @@ void UCanvas::execDrawActor( FFrame& Stack, RESULT_DECL )
 	if( ClearZ )
 		Viewport->RenDev->ClearZ( Frame );
 	Render->DrawActor( Frame, Actor );
+#ifdef PLATFORM_PSP
+	{
+		static INT Logged = 0;
+		if( Logged < 5 || ( ++Logged % 300 ) == 0 )
+		{
+			if( Logged < 5 ) ++Logged;
+			debugf( NAME_Log, TEXT("PSPWEAPON: canvas DrawActor %s mesh %s clearz %i loc %.0f,%.0f,%.0f drawtype %i style %i"), Actor->GetName(), Actor->Mesh ? Actor->Mesh->GetName() : TEXT("none"), ClearZ, Actor->Location.X, Actor->Location.Y, Actor->Location.Z, Actor->DrawType, Actor->Style );
+		}
+	}
+#endif
 	Actor->bHidden = 1;
 	Viewport->Actor->RendMap = OldRendMap;
 

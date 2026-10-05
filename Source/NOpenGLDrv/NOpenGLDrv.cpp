@@ -714,6 +714,31 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)( Elapsed * 10.0 ),
 				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ),
 				GPspTexBytes / 1024, TexAlloc.Num(), GPspUploadFailed, GPspRingWraps, PspHeapStr() );
+			if( Viewport && Viewport->Actor )
+			{
+				APlayerPawn* PP = Viewport->Actor;
+				// Script-side values, read through the property system rather than
+				// the C++ mirror (which is what is under suspicion).
+				{
+					TCHAR Line[512] = TEXT("");
+					UObject* Objs[2] = { PP->Level->Game, PP };
+					const TCHAR* Names[2][5] = { { TEXT("RemainingBots"), TEXT("CountDown"), TEXT("bRequireReady"), TEXT("NumBots"), TEXT("bNetReady") }, { TEXT("bReadyToPlay"), TEXT("bFire"), NULL, NULL, NULL } };
+					for( INT o = 0; o < 2; o++ )
+						for( INT n = 0; n < 5 && Names[o][n] && Objs[o]; n++ )
+						{
+							UProperty* Prop = FindField<UProperty>( Objs[o]->GetClass(), Names[o][n] );
+							TCHAR Val[64] = TEXT("?");
+							if( Prop )
+								Prop->ExportText( 0, Val, (BYTE*)Objs[o], (BYTE*)Objs[o], PPF_Localized );
+							appSprintf( Line + appStrlen(Line), TEXT("%s=%s(off %i) "), Names[o][n], Val, Prop ? Prop->Offset : -1 );
+						}
+					debugf( NAME_Log, TEXT("PSPPERF:   script %s"), Line );
+				}
+				if( PP->Level->Game ) debugf( NAME_Log, "PSPPERF:   game %s timer rate %.2f counter %.2f ready %i", PP->Level->Game->GetName(), PP->Level->Game->TimerRate, PP->Level->Game->TimerCounter, (INT)PP->bReadyToPlay );
+				debugf( NAME_Log, "PSPPERF:   level time %.2f dilation %.2f paused %s | player %s state %s weapon %s health %i hud %s behindview %i", PP->Level->TimeSeconds, PP->Level->TimeDilation, PP->Level->Pauser.Len() ? *PP->Level->Pauser : "-",
+					PP->GetName(), PP->GetStateFrame() && PP->GetStateFrame()->StateNode ? PP->GetStateFrame()->StateNode->GetName() : "-",
+					PP->Weapon ? PP->Weapon->GetName() : "none", PP->Health, PP->myHUD ? PP->myHUD->GetClass()->GetName() : "none", (INT)PP->bBehindView );
+			}
 			GPspUpFirst = GPspUpRealtime = GPspUpBig = GPspUpBytes = 0;
 			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = GPspRingWraps = GPspDrawCalls = GPspDrawVerts = 0;
 			GPspFinishWaitUs = 0;
@@ -761,6 +786,9 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 		const FLOAT Aspect = (FLOAT)Viewport->SizeX / (FLOAT)Viewport->SizeY;
 		const FLOAT Fov = (FLOAT)( appAtan( appTan( 90.0 * PI / 360.0 ) * ( Aspect / ( 4.0 / 3.0 ) ) ) * 360.0 ) / PI;
 		Viewport->Actor->DesiredFOV = Fov;
+		// UT weapons hide themselves while DesiredFOV != DefaultFOV (that is
+		// how they detect zooming), so widen the default along with it.
+		Viewport->Actor->DefaultFOV = Fov;
 	}
 
 	unguard;
@@ -2162,6 +2190,17 @@ void UNOpenGLRenderDevice::ClearZ( FSceneNode* Frame )
 
 	SetBlend( PF_Occlude );
 	glClear( GL_DEPTH_BUFFER_BIT );
+#ifdef __PSP__
+	{
+		static INT Logged = 0;
+		if( Logged < 5 )
+		{
+			++Logged;
+			GLint Mask = 0; glGetIntegerv( GL_DEPTH_WRITEMASK, &Mask );
+			debugf( NAME_Log, "PSPWEAPON: ClearZ (depth writemask %d, err 0x%x), %i draws so far this frame", (int)Mask, (unsigned)glGetError(), GPspDrawCalls );
+		}
+	}
+#endif
 
 	unguard;
 }

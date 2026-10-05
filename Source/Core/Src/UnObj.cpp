@@ -642,6 +642,9 @@ UBOOL UObject::ScriptConsoleExec( const TCHAR* Str, FOutputDevice& Ar, UObject* 
 	||	(Function=FindFunction(Message))==NULL 
 	||	!(Function->FunctionFlags & FUNC_Exec) )
 		return 0;
+#ifdef PLATFORM_PSP
+	debugf( NAME_Log, TEXT("PSPEXEC: %s -> %s (state %s)"), MsgStr, Function->GetFullName(), StateFrame && StateFrame->StateNode ? StateFrame->StateNode->GetName() : TEXT("-") );
+#endif
 
 	// Parse all function parameters.
 	BYTE* Parms = (BYTE*)appAlloca(Function->ParmsSize);

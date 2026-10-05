@@ -13,7 +13,11 @@
 //
 // Model objects are used for brushes and for the level itself.
 //
-enum {MAX_NODES  = 4096};
+#ifdef PLATFORM_DREAMCAST
+enum {MAX_NODES  = 4096};	// BSP indices are compressed to SWORD there
+#else
+enum {MAX_NODES  = 30000};
+#endif
 enum {MAX_POINTS = 8192};
 class ENGINE_API UModel : public UPrimitive
 {

@@ -34,7 +34,12 @@ const BYTE UNSDLViewport::JoyButtonMap[SDL_CONTROLLER_BUTTON_MAX] =
 	/* BUTTON_Y             */ IK_Joy4,
 	/* BUTTON_BACK          */ IK_Joy5,
 	/* BUTTON_GUIDE         */ IK_Joy6,
+#ifdef PLATFORM_PSP
+	// UT's console opens its menu on the raw Escape key, before bindings.
+	/* BUTTON_START         */ IK_Escape,
+#else
 	/* BUTTON_START         */ IK_Joy7,
+#endif
 	/* BUTTON_LEFTSTICK     */ IK_Joy8,
 	/* BUTTON_RIGHTSTICK    */ IK_Joy9,
 	/* BUTTON_LEFTSHOULDER  */ IK_Joy10,
@@ -50,10 +55,18 @@ const BYTE UNSDLViewport::JoyButtonMap[SDL_CONTROLLER_BUTTON_MAX] =
 //
 const BYTE UNSDLViewport::JoyButtonMapUI[SDL_CONTROLLER_BUTTON_MAX] =
 {
+#ifdef PLATFORM_PSP
+	// UWindow is a mouse UI: the stick moves the cursor (see below).
+	/* BUTTON_A (Cross)     */ IK_LeftMouse,
+	/* BUTTON_B (Circle)    */ IK_Escape,
+	/* BUTTON_X (Square)    */ IK_RightMouse,
+	/* BUTTON_Y (Triangle)  */ IK_Enter,
+#else
 	/* BUTTON_A             */ IK_Enter,
 	/* BUTTON_B             */ IK_Escape,
 	/* BUTTON_X             */ IK_N,
 	/* BUTTON_Y             */ IK_Y,
+#endif
 	/* BUTTON_BACK          */ IK_Escape,
 	/* BUTTON_GUIDE         */ IK_Escape,
 	/* BUTTON_START         */ IK_Escape,
@@ -70,6 +83,21 @@ const BYTE UNSDLViewport::JoyButtonMapUI[SDL_CONTROLLER_BUTTON_MAX] =
 //
 // SDL_CONTROLLER_BUTTON_ -> EInputKey translation map.
 //
+// UT's menus are UWindow, which the console runs while bUWindowActive is set.
+static UBOOL PspInUWindow( UObject* Console )
+{
+	if( !Console )
+		return 0;
+	static UClass* CachedClass = NULL;
+	static UBoolProperty* Prop = NULL;
+	if( Console->GetClass() != CachedClass )
+	{
+		CachedClass = Console->GetClass();
+		Prop = FindField<UBoolProperty>( CachedClass, TEXT("bUWindowActive") );
+	}
+	return Prop && ( *(DWORD*)( (BYTE*)Console + Prop->Offset ) & Prop->BitMask );
+}
+
 const BYTE UNSDLViewport::JoyAxisMap[SDL_CONTROLLER_AXIS_MAX] =
 {
 	/* AXIS_LEFT_X          */ IK_JoyX,
@@ -833,8 +861,8 @@ UBOOL UNSDLViewport::TickInput()
 
 	SDL_Event Ev;
 	INT Tmp;
-	const FLOAT CurTime = appSeconds();
-	const FLOAT DeltaTime = CurTime - InputUpdateTime;
+	const DOUBLE CurTime = appSeconds();
+	const FLOAT DeltaTime = (FLOAT)( CurTime - InputUpdateTime );
 
 	while( SDL_PollEvent( &Ev ) )
 	{
@@ -882,7 +910,7 @@ UBOOL UNSDLViewport::TickInput()
 				{
 					// HACK: Swap to alternate bindings when in menus, but not when waiting for keypress in the keybind menu.
 					// Note: GetMainFrame() is Unreal 1 specific, disabled for UT99
-					const UBOOL bIsInUI = 0; // Console && ((UObject*)Console)->GetMainFrame() && ...
+					const UBOOL bIsInUI = PspInUWindow( (UObject*)Console );
 					const BYTE* JoyMap = bIsInUI ? JoyButtonMapUI : JoyButtonMap;
 					CauseInputEvent( JoyMap[Ev.cbutton.button], ( Ev.type == SDL_CONTROLLERBUTTONDOWN ) ? IST_Press : IST_Release );
 				}
@@ -937,6 +965,20 @@ UBOOL UNSDLViewport::TickInput()
 			default:
 				break;
 		}
+	}
+
+	// In the menus the left stick is the mouse: UWindow's console moves its
+	// cursor by IK_MouseX/IK_MouseY axis deltas (times its MouseScale, 0.6).
+	if( PspInUWindow( (UObject*)Console ) )
+	{
+		const FLOAT Speed = 700.f * DeltaTime;   // full tilt crosses the 480px screen in ~1s
+		const FLOAT X = JoyAxis[SDL_CONTROLLER_AXIS_LEFTX] / 32767.f;
+		const FLOAT Y = JoyAxis[SDL_CONTROLLER_AXIS_LEFTY] / 32767.f;
+		// Square response: fine control near the centre, speed at the rim.
+		if( X ) CauseInputEvent( IK_MouseX, IST_Axis,  X * Abs(X) * Speed );
+		if( Y ) CauseInputEvent( IK_MouseY, IST_Axis, -Y * Abs(Y) * Speed );
+		InputUpdateTime = CurTime;
+		return QuitRequested;
 	}
 
 	// Constantly hammer the input system with axis events for axes that are not zero.

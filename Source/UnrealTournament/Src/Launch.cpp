@@ -284,6 +284,49 @@ static void MainLoop( UEngine* Engine )
 		DOUBLE NewTime   = appSeconds();
 		FLOAT  DeltaTime = NewTime - OldTime;
 		Engine->Tick( DeltaTime );
+#ifdef PLATFORM_PSP
+		// -EXECAT=<secs>:<command>[;<secs>:<command>...]: scripted console
+		// commands for unattended test runs ("-EXECAT=30:fire;40:shot").
+		{
+			static TCHAR Script[256] = TEXT("?");
+			static TCHAR* Next = NULL;
+			static DOUBLE Start = 0.0;
+			if( Script[0] == '?' )
+			{
+				Script[0] = 0;
+				Parse( appCmdLine(), TEXT("EXECAT="), Script, ARRAY_COUNT(Script) );
+				Next = Script;
+				Start = appSeconds();
+				debugf( NAME_Log, TEXT("PSPEXEC: script '%s' from '%s'"), Script, appCmdLine() );
+			}
+			if( Next && *Next && appSeconds() - Start >= appAtof( Next ) )
+			{
+				TCHAR* Colon = appStrchr( Next, ':' );
+				TCHAR* End = Colon ? appStrchr( Colon, ';' ) : NULL;
+				if( End ) *End = 0;
+				// Command lines cannot carry spaces: '_' stands in for one.
+				for( TCHAR* c = Colon; c && *c; ++c )
+					if( *c == '_' ) *c = ' ';
+				if( Colon && Engine->Client && Engine->Client->Viewports.Num() )
+				{
+					debugf( NAME_Log, TEXT("PSPEXEC: %s"), Colon + 1 );
+					UViewport* V = Engine->Client->Viewports(0);
+					const TCHAR* Cmd = Colon + 1;
+					EInputKey Key;
+					// "press <KeyName>": a real key press and release, as a pad
+					// button would send (aliases only fire on IST_Press).
+					if( ParseCommand( &Cmd, TEXT("PRESS") ) && V->Input && V->Input->FindKeyName( Cmd, Key ) )
+					{
+						Engine->InputEvent( V, Key, IST_Press );
+						Engine->InputEvent( V, Key, IST_Release );
+					}
+					else
+						V->Exec( Colon + 1, *GLog );
+				}
+				Next = End ? End + 1 : NULL;
+			}
+		}
+#endif
 		if( GWindowManager )
 			GWindowManager->Tick( DeltaTime );
 		OldTime = NewTime;

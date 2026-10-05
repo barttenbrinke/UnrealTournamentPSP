@@ -24,9 +24,7 @@ option(BUILD_NULLSOUNDDRV "Build SoundDrv (Null driver)" ON)
 option(BUILD_AICADRV "Build AICADrv (Dreamcast AICA sound driver)" OFF)
 option(BUILD_DCUTIL "Build DCUtil" ON)
 option(BUILD_STATIC "Link everything into a single binary" OFF)
-# The Unreal PSP port never got a working native IpDrv (its socket calls
-# reboot the console without network init); IpDrv.u loads as a plain script
-# package instead. Same default here.
+option(BUILD_NOPENALDRV "Build NOpenALDrv (PSP: own mixer behind an OpenAL shim)" OFF)
 option(BUILD_IPDRV "Build the native IpDrv package" ON)
 
 
@@ -42,7 +40,11 @@ set(DREAMCAST_IP_TXT "${CMAKE_SOURCE_DIR}/ip.txt" CACHE FILEPATH "Path to ip.txt
 set(DREAMCAST_ELF_FILE "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/UnrealTournament.elf" CACHE FILEPATH "Path to Unreal ELF used for mkdcdisc")
 
 if(PSP)
-  set(BUILD_IPDRV OFF CACHE BOOL "" FORCE)
+  # Native IpDrv stays ON: UT script binds its native classes (InternetLink,
+  # UdpLink, ...) even offline. Its socket calls are stubbed to fail on the
+  # PSP (IpDrv/Src/UnSocket.h): the Unreal port showed that touching sceNet
+  # uninitialised reboots the console.
+  set(BUILD_IPDRV ON CACHE BOOL "" FORCE)
   # One static binary, fixed-function GL through pspgl, our own audio driver.
   set(BUILD_STATIC ON)
   set(LOW_MEMORY ON)
@@ -50,6 +52,7 @@ if(PSP)
   set(BUILD_DCUTIL OFF)
   set(BUILD_NULLSOUNDDRV OFF)
   set(BUILD_NOPENGLDRV ON)
+  set(BUILD_NOPENALDRV ON)
 endif()
 
 if(PLATFORM_DREAMCAST)
@@ -332,6 +335,20 @@ endif()
 if(NOT PLATFORM_DREAMCAST AND NOT PSP)
   add_subdirectory(NOpenGLESDrv)
   list(APPEND INSTALL_TARGETS NOpenGLESDrv)
+endif()
+
+if(BUILD_NOPENALDRV)
+  if(NOT DEFINED OPENAL_INCLUDE_DIR)
+    set(OPENAL_INCLUDE_DIR )
+  endif()
+  if(NOT DEFINED LIBXMP_INCLUDE_DIR)
+    set(LIBXMP_INCLUDE_DIR )
+  endif()
+  if(NOT DEFINED LIBXMP_LIBRARY)
+    set(LIBXMP_LIBRARY "-lxmp")
+  endif()
+  add_subdirectory(NOpenALDrv)
+  list(APPEND INSTALL_TARGETS NOpenALDrv)
 endif()
 
 if(BUILD_PVRDRV)

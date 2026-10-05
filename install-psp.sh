@@ -36,6 +36,11 @@ mkdir -p "$DEST/Save"
 cp "$HERE/Config/PSP/UnrealTournament.ini" "$HERE/Config/PSP/User.ini" "$DEST/System/"
 cp "$EBOOT" "$DEST/EBOOT.PBP"
 rm -f "$DEST/System/UnrealTournament.log"
+# PPSSPP has no Media Engine: the ME start-up never returns there, so an
+# emulator install keeps the music on the CPU.
+case "$GAMEDIR" in
+  *ppsspp*) sed -i.bak 's/^MusicME=1/MusicME=0/' "$DEST/System/UnrealTournament.ini" && rm -f "$DEST/System/UnrealTournament.ini.bak" ;;
+esac
 
 # macOS writes "._" AppleDouble sidecars on FAT volumes; the PSP lists them as
 # "Corrupted Data". Clean them up when we wrote to a real card.

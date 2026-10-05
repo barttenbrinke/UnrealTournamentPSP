@@ -59,10 +59,14 @@ if(PSP)
     -Wl,--whole-archive pthread -Wl,--no-whole-archive
     SDL2main SDL2
     GLU GL
-    pspvram pspaudio pspvfpu pspdisplay pspgu pspge
+    xmp
+    me-core pspvram pspaudio pspaudiolib pspvfpu pspdisplay pspgu pspge
     psphprm pspctrl psppower psprtc
     stdc++ m
   )
+  # libxmp's memory must not share cache lines with the CPU heap (the music
+  # runs on the Media Engine): NOpenALDrv wraps the allocator entry points.
+  target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=malloc,--wrap=free,--wrap=realloc,--wrap=calloc)
   # MEMSIZE=1 in PARAM.SFO claims the PSP-2000's extra 32MB.
   create_pbp_file(
     TARGET ${PROJECT_NAME}

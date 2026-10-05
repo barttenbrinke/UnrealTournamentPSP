@@ -122,11 +122,15 @@ FLOAT FSoundData::GetPeriod()
 	{
 		#define DEFAULT_FREQUENCY (22050)
 #if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_PSP)
-		INT SPS, Channels, BitsPerSample, WaveDataSize;
-		__builtin_memcpy( &SPS, WaveInfo.pSamplesPerSec, sizeof(INT) );
-		__builtin_memcpy( &Channels, WaveInfo.pChannels, sizeof(INT) );
-		__builtin_memcpy( &BitsPerSample, WaveInfo.pBitsPerSample, sizeof(INT) );
-		__builtin_memcpy( &WaveDataSize, WaveInfo.pWaveDataSize, sizeof(INT) );
+		// Byte-wise reads: these point into the WAV data at arbitrary offsets.
+		// Channels and BitsPerSample are 16-bit fields.
+		DWORD SPS32, WaveDataSize32;
+		_WORD Channels16, BitsPerSample16;
+		__builtin_memcpy( &SPS32, WaveInfo.pSamplesPerSec, sizeof(SPS32) );
+		__builtin_memcpy( &Channels16, WaveInfo.pChannels, sizeof(Channels16) );
+		__builtin_memcpy( &BitsPerSample16, WaveInfo.pBitsPerSample, sizeof(BitsPerSample16) );
+		__builtin_memcpy( &WaveDataSize32, WaveInfo.pWaveDataSize, sizeof(WaveDataSize32) );
+		INT SPS = SPS32, Channels = Channels16, BitsPerSample = BitsPerSample16, WaveDataSize = WaveDataSize32;
 #else
 		INT SPS = *WaveInfo.pSamplesPerSec;
 		INT Channels = *WaveInfo.pChannels;
@@ -711,8 +715,9 @@ void UMusic::Serialize( FArchive& Ar )
 	Ar << FileType;
 	if( Ar.IsLoading() || Ar.IsSaving() )
 	{
-#ifdef PLATFORM_LOW_MEMORY
-		// Low memory: read the seek position and skip the data
+#if defined(PLATFORM_LOW_MEMORY) && !defined(PLATFORM_PSP)
+		// Low memory: read the seek position and skip the data (the Dreamcast
+		// plays no music; the PSP keeps a lazy array and loads on demand)
 		if( Ar.IsLoading() && Ar.Ver() > 61 )
 		{
 			INT SeekPos = 0;

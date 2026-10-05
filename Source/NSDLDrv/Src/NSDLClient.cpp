@@ -13,10 +13,10 @@ IMPLEMENT_CLASS( UNSDLClient );
 //
 // Static init.
 //
-void UNSDLClient::InternalClassInitializer( UClass* Class )
+void UNSDLClient::StaticConstructor()
 {
-	guard(UNSDLClient::InternalClassInitializer);
-	if( appStricmp( Class->GetName(), "NSDLClient" ) == 0 )
+	guard(UNSDLClient::StaticConstructor);
+	UClass* Class = GetClass();
 	{
 		new(Class, "DefaultDisplay",    RF_Public)UIntProperty(CPP_PROPERTY(DefaultDisplay),     "Display",  CPF_Config );
 		new(Class, "StartupFullscreen", RF_Public)UBoolProperty(CPP_PROPERTY(StartupFullscreen), "Display",  CPF_Config );
@@ -28,6 +28,14 @@ void UNSDLClient::InternalClassInitializer( UClass* Class )
 		new(Class, "InvertY",           RF_Public)UBoolProperty(CPP_PROPERTY(InvertY),           "Joystick", CPF_Config );
 		new(Class, "InvertV",           RF_Public)UBoolProperty(CPP_PROPERTY(InvertV),           "Joystick", CPF_Config );
 	}
+	// Defaults go on the class default object: v400 runs the C++
+	// constructor after copying the ini-loaded defaults into a new object.
+	DefaultDisplay = 0;
+	UseJoystick = true;
+	ScaleXYZ = 100.f;
+	ScaleRUV = 100.f;
+	DeadZoneXYZ = 0.1f;
+	DeadZoneRUV = 0.1f;
 	unguard;
 }
 
@@ -37,13 +45,8 @@ void UNSDLClient::InternalClassInitializer( UClass* Class )
 UNSDLClient::UNSDLClient()
 {
 	guard(UNSDLClient::UWindowsClient);
+	// Config defaults are in StaticConstructor (see there).
 	Controller = NULL;
-	DefaultDisplay = 0;
-	UseJoystick = true;
-	ScaleXYZ = 100.f;
-	ScaleRUV = 100.f;
-	DeadZoneXYZ = 0.1f;
-	DeadZoneRUV = 0.1f;
 	unguard;
 }
 
@@ -55,6 +58,9 @@ UNSDLClient::UNSDLClient()
 void UNSDLClient::Init( UEngine* InEngine )
 {
 	guard(UNSDLClient::Init);
+
+	// A native-only class: no script package loads its config, so do it here.
+	LoadConfig();
 
 	// Init base.
 	UClient::Init( InEngine );

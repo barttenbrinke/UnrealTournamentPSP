@@ -15,6 +15,7 @@ set(SRC_FILES
   "Src/UnAnsi.cpp"
   "Src/Core.cpp"
   "Src/UFactory.cpp"
+  "Src/UnThread.cpp"
   "Src/UExporter.cpp"
 )
 

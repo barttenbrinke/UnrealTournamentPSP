@@ -1,0 +1,1895 @@
+#include <stdlib.h>
+
+#define AL_ALEXT_PROTOTYPES
+#include "AL/al.h"
+#include "AL/alc.h"
+#include "AL/alext.h"
+#ifndef PSP_NO_EFX  // PSP OpenAL implements EFX but ships no efx.h header
+#include "AL/efx.h"
+#include "AL/efx-presets.h"
+#endif
+#include "xmp.h"
+
+#include "NOpenALDrvPrivate.h"
+
+// UT v400 compatibility for code written against Unreal v200.
+static UBOOL GetConfigInt( const TCHAR* Section, const TCHAR* Key, INT& Value )
+{
+	return GConfig->GetInt( Section, Key, Value );
+}
+// Sample loop flag per sound (v200's USound carried it; v400's does not).
+static TMap<USound*,UBOOL>* GPspLooping = NULL;
+static UBOOL PspSoundLoops( USound* Sound )
+{
+	UBOOL* L = GPspLooping ? GPspLooping->Find( Sound ) : NULL;
+	return L ? *L : 0;
+}
+// WAV header fields sit at arbitrary offsets: read them byte-wise (a
+// misaligned word load is a fatal address error on the PSP).
+static inline DWORD PspRd32( const void* P ) { DWORD V; appMemcpy( &V, P, 4 ); return V; }
+static inline _WORD PspRd16( const void* P ) { _WORD V; appMemcpy( &V, P, 2 ); return V; }
+
+#ifdef __PSP__
+#include <pspaudio.h>
+#include <pspthreadman.h>
+#include <pspiofilemgr.h>
+#include <malloc.h>
+//
+// Pre-rendered music on a hardware channel. The tracker mixer (17 channels
+// for the intro's flyby.umx) is CPU the PSP does not have, so install-psp.sh
+// renders every .umx to Music/<song>.wav (11025 Hz mono 16-bit, xmp) and this
+// streams it: a high-priority thread reads a block, upsamples it 4x with
+// linear interpolation to the channel's 44100 Hz, and hands it to
+// sceAudioOutputBlocking, which the hardware mixes with OpenAL's channel for
+// free. Loops at end of file. Song sections are ignored (the file is the
+// whole module in order). Without the file, libxmp plays as before.
+//
+enum { PSP_MUS_FRAMES = 2048, PSP_MUS_OUTRATE = 44100 };
+static SceUID GPspMusFd = -1, GPspMusThread = -1;
+static int    GPspMusChan = -1, GPspMusRatio = 4, GPspMusDataStart = 0;
+static volatile int GPspMusRun = 0, GPspMusPlaying = 0, GPspMusVol = 0, GPspMusRewind = 0;
+static short* GPspMusSrc = NULL;
+static short* GPspMusOut = NULL;   // two halves: the hardware reads a block while the next is built
+static int    GPspMusOutHalf = 0;
+static const int PSP_MUS_OUT_HALF = PSP_MUS_FRAMES * 8;   // shorts per half, room for ratio up to 8
+static UBOOL  GPspMusStreaming = 0;
+
+// ---- Music rendered on the Media Engine ------------------------------------
+//
+// The PSP's second Allegrex core is idle in homebrew. With mcidclan's me-core
+// (a small kernel bridge PRX it extracts next to the EBOOT, plus an entry
+// point that runs on the ME) libxmp renders the module there: the main CPU
+// loads the module and starts the player as in the stock path, then hands the
+// context to the ME, which fills a ring of PCM blocks in uncached memory. The
+// streamer thread above feeds those blocks to the hardware channel. Section
+// changes and stop are a command word the ME polls between blocks.
+//
+// Rules learned on the hardware: set $gp on entry (psp-gcc keeps small data
+// gp-relative and the ME entry does not set it); everything the ME touches
+// that the CPU wrote must be written back first (meLibDefaultInit and the
+// start command do that); the ME writes back and drops its cache on stop so
+// no dirty line of a freed context lands later. The render loop makes no
+// syscalls: xmp_play_buffer and xmp_set_position allocate nothing.
+//   [PSP] MusicME=1        ; 0 = do not use the Media Engine
+//   [PSP] MusicMERate=44100; render rate on the ME; must divide 44100
+//   [PSP] MusicMEStereo=1  ; stereo at 44100 straight into the channel (else mono, upsampled)
+//
+#include <me-core-mapper/me-core.h>   // defines the ME entry glue: include from ONE file only
+#include "PspMix.h"                    // the sound mixer the ME loop below also runs
+// libxmp's player state lives in the heap and is written by the Media
+// Engine, which has its own data cache. A 64-byte line holding the end of
+// a libxmp block and the start of a neighbouring CPU block gets written
+// back from the ME with stale neighbour bytes: heap-header and small-object
+// corruption that surfaced as crashes in mallinfo, _free_r and pspgl's
+// texture free (a save load without ME music went through cleanly). So
+// every allocation libxmp makes gets its own 64-byte aligned, 64-byte
+// padded block: the ME never shares a cache line with anything else. The
+// link wraps the public malloc/calloc/realloc/free (Source/Unreal/
+// CMakeLists.txt) -- not newlib's _*_r internals, whose own calloc/realloc
+// expect real chunks back from _malloc_r. The flag routes allocations while
+// libxmp runs on the CPU (context creation, module load, player start);
+// frees and reallocs recognise the header.
+static volatile INT GPspXmpAlloc = 0;
+struct FPspXmpScope { FPspXmpScope() { ++GPspXmpAlloc; } ~FPspXmpScope() { --GPspXmpAlloc; } };
+struct FPspMeHdr { u32 Magic0, Magic1; void* Raw; u32 Size; };
+enum { PSP_ME_MAGIC0 = 0x4D454C4E, PSP_ME_MAGIC1 = 0x584D5041 };
+extern "C" void* __real_malloc( size_t );
+extern "C" void  __real_free( void* );
+extern "C" void* __real_realloc( void*, size_t );
+extern "C" void* __real_calloc( size_t, size_t );
+static void* PspMeAlloc( size_t N )
+{
+	const size_t Pay = ( N + 63 ) & ~(size_t)63;
+	char* Raw = (char*)__real_malloc( Pay + 64 + 63 );
+	if( !Raw ) return NULL;
+	char* P = (char*)( ( (u32)Raw + 63 + 64 ) & ~63u );
+	FPspMeHdr* H = (FPspMeHdr*)( P - 64 );
+	H->Magic0 = PSP_ME_MAGIC0; H->Magic1 = PSP_ME_MAGIC1; H->Raw = Raw; H->Size = (u32)N;
+	return P;
+}
+static inline FPspMeHdr* PspMeHdr( void* P )
+{
+	if( !P || ( (u32)P & 63 ) || (u32)P < 0x08800000 + 64 ) return NULL;
+	FPspMeHdr* H = (FPspMeHdr*)( (char*)P - 64 );
+	return ( H->Magic0 == PSP_ME_MAGIC0 && H->Magic1 == PSP_ME_MAGIC1 ) ? H : NULL;
+}
+extern "C" void* __wrap_malloc( size_t N )
+{
+	return GPspXmpAlloc ? PspMeAlloc( N ) : __real_malloc( N );
+}
+extern "C" void* __wrap_calloc( size_t N, size_t M )
+{
+	if( !GPspXmpAlloc ) return __real_calloc( N, M );
+	void* P = PspMeAlloc( N * M );
+	if( P ) memset( P, 0, N * M );
+	return P;
+}
+extern "C" void __wrap_free( void* P )
+{
+	FPspMeHdr* H = PspMeHdr( P );
+	if( H ) { H->Magic0 = 0; __real_free( H->Raw ); }
+	else __real_free( P );
+}
+extern "C" void* __wrap_realloc( void* P, size_t N )
+{
+	FPspMeHdr* H = PspMeHdr( P );
+	if( !H )
+		return ( !P && GPspXmpAlloc ) ? PspMeAlloc( N ) : __real_realloc( P, N );   // a plain block stays plain
+	if( !N ) { __wrap_free( P ); return NULL; }
+	void* Q = PspMeAlloc( N );
+	if( !Q ) return NULL;
+	memcpy( Q, P, H->Size < N ? H->Size : N );
+	__wrap_free( P );
+	return Q;
+}
+
+enum { PSP_ME_BLOCKS = 8 };
+struct FPspMeShared
+{
+	volatile u32 Cmd;         // 1 start (Ctx), 2 set position (Arg), 3 stop
+	volatile u32 Arg;
+	volatile u32 Ctx;         // xmp_context, cached address
+	volatile u32 Status;      // 0 idle, 1 rendering
+	volatile u32 Write;       // blocks produced (ME owns)
+	volatile u32 Read;        // blocks consumed (CPU owns)
+	volatile u32 Heartbeat;   // ME loop count, for the log
+	volatile u32 Ring;        // uncached address of PSP_ME_BLOCKS blocks
+	volatile u32 BlockBytes;
+	volatile u32 Err;         // last xmp_play_buffer error
+	volatile u32 Blocks;      // blocks rendered in total
+	volatile u32 Mix;         // uncached address of the FPspMixShared the ME mixes for (0 = none)
+};
+static int GPspMeMixAcc[PSP_MIX_FRAMES * 2] __attribute__((aligned(64)));   // ME-side accumulator; the CPU never touches it
+static FPspMeShared* GPspMe = NULL;     // uncached alias
+static INT   GPspMeInit   = 0;          // 0 untried, 1 ready, -1 unavailable
+static UBOOL GPspMeActive = 0;          // current song renders on the ME
+static INT   GPspSndLog   = -1;         // -SNDLOG: trace effect playback (first calls only)
+// Resident OpenAL sample memory is capped: sounds upload on first play
+// (USound::Serialize defers them), and without a cap a long deathmatch
+// walks through every sound in the level (5 MB for DmRadikus). Least
+// recently played sounds that no voice references are unregistered; their
+// next play reloads them from the package.
+//   [PSP] SoundBudgetKB=2048
+struct FPspSndRec { USound* Sound; INT Bytes; DWORD Stamp; };
+static TArray<FPspSndRec> GPspSndRecs;
+static INT   GPspSndResident = 0;
+static DWORD GPspSndClock    = 0;
+static INT   GPspSndBudgetKB = -1;
+static INT   GPspSndEvicted  = 0;
+static INT PspSndBudgetKB()
+{
+	if( GPspSndBudgetKB < 0 ) { GPspSndBudgetKB = 2048; GetConfigInt( "PSP", "SoundBudgetKB", GPspSndBudgetKB ); }
+	return GPspSndBudgetKB;
+}
+static void PspSndForget( USound* Sound )
+{
+	for( INT i = 0; i < GPspSndRecs.Num(); ++i )
+		if( GPspSndRecs(i).Sound == Sound )
+		{
+			GPspSndResident -= GPspSndRecs(i).Bytes;
+			GPspSndRecs.Remove( i );
+			return;
+		}
+}
+static void PspSndTouch( USound* Sound )
+{
+	for( INT i = 0; i < GPspSndRecs.Num(); ++i )
+		if( GPspSndRecs(i).Sound == Sound ) { GPspSndRecs(i).Stamp = ++GPspSndClock; return; }
+}
+static UBOOL PspSndLog()
+{
+	if( GPspSndLog < 0 ) GPspSndLog = ParseParam( appCmdLine(), "SNDLOG" ) ? 1 : 0;
+	return GPspSndLog != 0;
+}
+static INT   GPspMeRate   = 44100;
+static INT   GPspMeStereo = 1;
+
+// Runs on the Media Engine, forever.
+__attribute__((noinline, aligned(4))) void meLibOnProcess( void )   // declared by me-core with C++ linkage
+{
+	asm volatile( "la $gp, _gp" ::: "memory" );
+	meLibDcacheWritebackInvalidateAll();
+	FPspMeShared* Me = GPspMe;
+	xmp_context Ctx = NULL;
+	for( ;; )
+	{
+		Me->Heartbeat = Me->Heartbeat + 1;
+		const u32 Cmd = Me->Cmd;
+		if( Cmd )
+		{
+			Me->Cmd = 0;
+			if( Cmd == 1 )
+			{
+				meLibDcacheWritebackInvalidateAll();   // the CPU just loaded a module
+				Ctx = (xmp_context)Me->Ctx;
+				Me->Write = 0;
+				Me->Err = 0;
+				meLibSync();
+				Me->Status = 1;
+			}
+			else if( Cmd == 2 )
+			{
+				if( Ctx )
+					xmp_set_position( Ctx, (int)Me->Arg );
+				Me->Write = Me->Read;   // drop what was queued: the section change is immediate
+				meLibSync();
+			}
+			else if( Cmd == 3 )
+			{
+				Ctx = NULL;
+				meLibDcacheWritebackInvalidateAll();   // nothing dirty may survive the context's free
+				meLibSync();
+				Me->Status = 0;
+			}
+		}
+		// One block of slack: the block the CPU just handed to the channel is
+		// still being read by the audio hardware while the next one plays, so
+		// the ME may not reuse it until the CPU has consumed one more.
+		int Did = 0;
+		if( Ctx && ( Me->Write - Me->Read ) < PSP_ME_BLOCKS - 1 )
+		{
+			void* Block = (void*)( Me->Ring + ( Me->Write % PSP_ME_BLOCKS ) * Me->BlockBytes );
+			const int R = xmp_play_buffer( Ctx, Block, (int)Me->BlockBytes, 0 );
+			if( R < 0 )
+				Me->Err = (u32)R;
+			meLibSync();
+			Me->Write = Me->Write + 1;
+			Me->Blocks = Me->Blocks + 1;
+			Did = 1;
+		}
+		// Sound effects: one block ahead of the output thread, same slack rule.
+		FPspMixShared* Mix = (FPspMixShared*)Me->Mix;
+		if( Mix && Mix->Enable && ( Mix->Write - Mix->Read ) < PSP_MIX_BLOCKS - 1 )
+		{
+			short* Block = (short*)( Mix->Ring + ( Mix->Write % PSP_MIX_BLOCKS ) * PSP_MIX_FRAMES * 4 );
+			PspMixBlock( Mix, Block, GPspMeMixAcc );
+			meLibSync();
+			Mix->Write = Mix->Write + 1;
+			Mix->Blocks = Mix->Blocks + 1;
+			Did = 1;
+		}
+		if( !Did )
+			meLibDelayPipeline();
+	}
+}
+
+static UBOOL PspMeReady()
+{
+	if( GPspMeInit )
+		return GPspMeInit > 0;
+	GPspMeInit = -1;
+	INT Use = 1;
+	GetConfigInt( "PSP", "MusicME", Use );
+	Parse( appCmdLine(), "MUSICME=", Use );   // hardware A/B without an ini edit
+	if( !Use )
+	{
+		debugf( NAME_Log, "PSPMUSIC: Media Engine disabled (ini or -MUSICME=0)" );
+		return 0;
+	}
+	GetConfigInt( "PSP", "MusicMERate", GPspMeRate );
+	if( GPspMeRate <= 0 || ( PSP_MUS_OUTRATE % GPspMeRate ) != 0 )
+		GPspMeRate = PSP_MUS_OUTRATE;
+	GetConfigInt( "PSP", "MusicMEStereo", GPspMeStereo );
+	if( GPspMeRate != PSP_MUS_OUTRATE )
+		GPspMeStereo = 0;   // the upsampling path is mono only
+	const u32 BlockBytes = PSP_MUS_FRAMES * ( GPspMeStereo ? 4 : 2 );
+	void* Shared = memalign( 64, ( sizeof(FPspMeShared) + 63 ) & ~63 );
+	void* Ring   = memalign( 64, PSP_ME_BLOCKS * BlockBytes );
+	if( !Shared || !Ring )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: no memory for the Media Engine ring" );
+		return 0;
+	}
+	appMemset( Shared, 0, ( sizeof(FPspMeShared) + 63 ) & ~63 );
+	appMemset( Ring, 0, PSP_ME_BLOCKS * BlockBytes );
+	sceKernelDcacheWritebackInvalidateRange( Shared, ( sizeof(FPspMeShared) + 63 ) & ~63 );
+	sceKernelDcacheWritebackInvalidateRange( Ring, PSP_ME_BLOCKS * BlockBytes );
+	GPspMe = (FPspMeShared*)( (u32)Shared | 0x40000000 );
+	GPspMe->Ring       = (u32)Ring | 0x40000000;
+	GPspMe->BlockBytes = BlockBytes;
+	GPspMe->Mix        = (u32)GPspMix;   // NULL if the mixer is not up yet
+	const int Table = meLibDefaultInit();   // extracts + loads the kernel bridge, starts the ME on meLibOnProcess
+	if( Table < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: Media Engine init failed (%i); music stays on the CPU", Table );
+		return 0;
+	}
+	sceKernelDelayThread( 20000 );
+	debugf( NAME_Log, "PSPMUSIC: Media Engine up (table %i, heartbeat %u), render rate %i Hz, %i blocks of %i frames",
+		Table, (unsigned)GPspMe->Heartbeat, GPspMeRate, (int)PSP_ME_BLOCKS, (int)PSP_MUS_FRAMES );
+	GPspMeInit = 1;
+	if( GPspMix && GPspMe->Heartbeat > 0 )
+	{
+		GPspMix->Enable = 1;   // from here the ME mixes the effects; the output thread only feeds the channel
+		debugf( NAME_Log, "PSPMIX: sound effects mix on the Media Engine" );
+	}
+	return 1;
+}
+
+static UBOOL PspMeWait( u32 Status, INT Ms )
+{
+	for( INT i=0; i<Ms; i++ )
+	{
+		if( GPspMe->Status == Status )
+			return 1;
+		sceKernelDelayThread( 1000 );
+	}
+	return 0;
+}
+
+static void PspMeStop()
+{
+	if( !GPspMeActive )
+		return;
+	GPspMe->Cmd = 3;
+	if( !PspMeWait( 0, 500 ) )
+		debugf( NAME_Warning, "PSPMUSIC: Media Engine did not acknowledge stop (heartbeat %u)", (unsigned)GPspMe->Heartbeat );
+	GPspMeActive = 0;
+}
+
+static int PspMusThreadProc( SceSize, void* )
+{
+	short Last = 0;
+	while( GPspMusRun )
+	{
+		if( !GPspMusPlaying )
+		{
+			sceKernelDelayThread( 20000 );
+			continue;
+		}
+		if( GPspMeActive )
+		{
+			// Media Engine source: wait for a rendered block, play it in place
+			// (ratio 1) or upsample it as the file path does.
+			if( GPspMe->Write == GPspMe->Read )
+			{
+				sceKernelDelayThread( 1000 );
+				continue;
+			}
+			const short* Block = (const short*)( GPspMe->Ring + ( GPspMe->Read % PSP_ME_BLOCKS ) * GPspMe->BlockBytes );
+			if( GPspMusRatio == 1 )
+				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, (void*)Block );
+			else
+			{
+				short* Out = GPspMusOut + ( GPspMusOutHalf ^= 1 ) * PSP_MUS_OUT_HALF;
+				short* O = Out;
+				for( int i = 0; i < PSP_MUS_FRAMES; ++i )
+				{
+					const int S = Block[i];
+					for( int k = 1; k <= GPspMusRatio; ++k )
+						*O++ = (short)( Last + ( S - Last ) * k / GPspMusRatio );
+					Last = (short)S;
+				}
+				sceAudioOutputBlocking( GPspMusChan, GPspMusVol, Out );
+			}
+			GPspMe->Read = GPspMe->Read + 1;
+			static u32 Logged = 0;
+			if( ( GPspMe->Read - Logged ) >= 100 )   // ~4.6 s at 44100
+			{
+				Logged = GPspMe->Read;
+				debugf( NAME_Log, "PSPMUSIC: ME blocks %u queued %u err %d heartbeat %u",
+					(unsigned)GPspMe->Blocks, (unsigned)( GPspMe->Write - GPspMe->Read ), (int)GPspMe->Err, (unsigned)GPspMe->Heartbeat );
+			}
+			continue;
+		}
+		if( GPspMusRewind )
+		{
+			GPspMusRewind = 0;
+			sceIoLseek32( GPspMusFd, GPspMusDataStart, PSP_SEEK_SET );
+		}
+		const int Want = PSP_MUS_FRAMES * 2;
+		int Got = sceIoRead( GPspMusFd, GPspMusSrc, Want );
+		if( Got < 0 ) Got = 0;
+		if( Got < Want )
+		{
+			// End of file: wrap and top the block up from the start.
+			sceIoLseek32( GPspMusFd, GPspMusDataStart, PSP_SEEK_SET );
+			int More = sceIoRead( GPspMusFd, (BYTE*)GPspMusSrc + Got, Want - Got );
+			if( More > 0 ) Got += More;
+			if( Got < Want ) appMemset( (BYTE*)GPspMusSrc + Got, 0, Want - Got );
+		}
+		short* Out = GPspMusOut + ( GPspMusOutHalf ^= 1 ) * PSP_MUS_OUT_HALF;
+		short* O = Out;
+		for( int i = 0; i < PSP_MUS_FRAMES; ++i )
+		{
+			const int S = GPspMusSrc[i];
+			for( int k = 1; k <= GPspMusRatio; ++k )
+				*O++ = (short)( Last + ( S - Last ) * k / GPspMusRatio );
+			Last = (short)S;
+		}
+		sceAudioOutputBlocking( GPspMusChan, GPspMusVol, Out );
+	}
+	return 0;
+}
+
+static void PspMusClose()
+{
+	PspMeStop();
+	if( GPspMusThread >= 0 )
+	{
+		GPspMusRun = 0;
+		sceKernelWaitThreadEnd( GPspMusThread, NULL );
+		sceKernelDeleteThread( GPspMusThread );
+		GPspMusThread = -1;
+	}
+	if( GPspMusChan >= 0 ) { sceAudioChRelease( GPspMusChan ); GPspMusChan = -1; }
+	if( GPspMusFd >= 0 )   { sceIoClose( GPspMusFd ); GPspMusFd = -1; }
+	GPspMusStreaming = 0;
+	GPspMusPlaying   = 0;
+}
+
+// Hand a started libxmp player to the Media Engine and open the hardware
+// channel for it. Returns 0 (and leaves the player untouched) if the ME is
+// not available.
+static UBOOL PspMeOpen( xmp_context Ctx, const char* Name, INT Volume255 )
+{
+	if( !PspMeReady() )
+		return 0;
+	PspMusClose();
+	GPspMusVol   = Volume255 * PSP_AUDIO_VOLUME_MAX / 255;
+	GPspMusRatio = PSP_MUS_OUTRATE / GPspMeRate;
+	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_OUT_HALF * 2 * 2 );
+	GPspMusChan = sceAudioChReserve( PSP_AUDIO_NEXT_CHANNEL, PSP_MUS_FRAMES * GPspMusRatio, GPspMeStereo ? PSP_AUDIO_FORMAT_STEREO : PSP_AUDIO_FORMAT_MONO );
+	if( !GPspMusOut || GPspMusChan < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: no hardware channel for the ME (%i)", GPspMusChan );
+		GPspMusChan = -1; return 0;
+	}
+	GPspMe->Read = 0;
+	GPspMe->Ctx  = (u32)Ctx;
+	sceKernelDcacheWritebackInvalidateAll();   // the module and player state the CPU just built
+	GPspMe->Cmd = 1;
+	if( !PspMeWait( 1, 500 ) )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: Media Engine did not start %s (heartbeat %u)", Name, (unsigned)GPspMe->Heartbeat );
+		sceAudioChRelease( GPspMusChan ); GPspMusChan = -1;
+		return 0;
+	}
+	GPspMeActive = 1;
+	GPspMusFd = -1;
+	GPspMusRun = 1; GPspMusPlaying = 0; GPspMusRewind = 0;
+	GPspMusThread = sceKernelCreateThread( "psp_music", PspMusThreadProc, 0x10, 16 * 1024, THREAD_ATTR_USER, NULL );
+	if( GPspMusThread < 0 || sceKernelStartThread( GPspMusThread, 0, NULL ) < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: thread failed (%i)", GPspMusThread );
+		GPspMusThread = -1; PspMusClose(); return 0;
+	}
+	GPspMusStreaming = 1;
+	debugf( NAME_Log, "PSPMUSIC: %s renders on the Media Engine (%i Hz %s x%i) on hardware channel %i", Name, GPspMeRate, GPspMeStereo ? "stereo" : "mono", GPspMusRatio, GPspMusChan );
+	return 1;
+}
+
+// Music/<Name>.wav next to System/. Returns 1 and takes over playback when the
+// file exists and is 16-bit mono PCM at a rate that divides 44100.
+static UBOOL PspMusOpen( const char* Name, INT Volume255 )
+{
+	PspMusClose();
+	GPspMusVol = Volume255 * PSP_AUDIO_VOLUME_MAX / 255;   // set here too; the fade path updates it later
+	char Path[300];
+	appStrncpy( Path, appBaseDir(), sizeof(Path) );            // ".../Unreal/System/"
+	INT L = appStrlen( Path );
+	if( L > 7 && appStricmp( Path + L - 7, "System/" ) == 0 ) Path[L-7] = 0;
+	appStrncat( Path, "Music/", sizeof(Path) - 1 );
+	appStrncat( Path, Name, sizeof(Path) - 1 );
+	appStrncat( Path, ".wav", sizeof(Path) - 1 );
+	SceUID Fd = sceIoOpen( Path, PSP_O_RDONLY, 0777 );
+	if( Fd < 0 )
+		return 0;
+
+	// RIFF walk for "fmt " and "data".
+	static BYTE Hdr[512] __attribute__((aligned(64)));
+	int N = sceIoRead( Fd, Hdr, sizeof(Hdr) );
+	if( N < 44 || appMemcmp( Hdr, "RIFF", 4 ) || appMemcmp( Hdr + 8, "WAVE", 4 ) ) { sceIoClose( Fd ); return 0; }
+	int Rate = 0, Channels = 0, Bits = 0, DataAt = 0, O = 12;
+	while( O + 8 <= N )
+	{
+		DWORD Len; appMemcpy( &Len, Hdr + O + 4, 4 );
+		if( !appMemcmp( Hdr + O, "fmt ", 4 ) )
+		{
+			_WORD w; appMemcpy( &w, Hdr + O + 10, 2 ); Channels = w;
+			DWORD d; appMemcpy( &d, Hdr + O + 12, 4 ); Rate = d;
+			appMemcpy( &w, Hdr + O + 22, 2 ); Bits = w;
+		}
+		else if( !appMemcmp( Hdr + O, "data", 4 ) ) { DataAt = O + 8; break; }
+		O += 8 + ( ( Len + 1 ) & ~1 );
+	}
+	if( !DataAt || Channels != 1 || Bits != 16 || Rate <= 0 || ( PSP_MUS_OUTRATE % Rate ) != 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: %s is not 16-bit mono PCM at a rate dividing 44100 (ch %i bits %i rate %i)", Path, Channels, Bits, Rate );
+		sceIoClose( Fd );
+		return 0;
+	}
+	GPspMusRatio     = PSP_MUS_OUTRATE / Rate;
+	GPspMusDataStart = DataAt;
+	sceIoLseek32( Fd, DataAt, PSP_SEEK_SET );
+	if( !GPspMusSrc ) GPspMusSrc = (short*)memalign( 64, PSP_MUS_FRAMES * 2 );
+	if( !GPspMusOut ) GPspMusOut = (short*)memalign( 64, PSP_MUS_OUT_HALF * 2 * 2 );   // two halves
+	GPspMusChan = sceAudioChReserve( PSP_AUDIO_NEXT_CHANNEL, PSP_MUS_FRAMES * GPspMusRatio, PSP_AUDIO_FORMAT_MONO );
+	if( !GPspMusSrc || !GPspMusOut || GPspMusChan < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: no hardware channel (%i)", GPspMusChan );
+		GPspMusChan = -1; sceIoClose( Fd ); return 0;
+	}
+	GPspMusFd  = Fd;
+	GPspMusRun = 1; GPspMusPlaying = 0; GPspMusRewind = 0;
+	// Above the main thread (which SDLLaunch lowers further) so long frames
+	// never starve it; the block output blocks, so it costs nothing otherwise.
+	GPspMusThread = sceKernelCreateThread( "psp_music", PspMusThreadProc, 0x10, 16 * 1024, THREAD_ATTR_USER, NULL );
+	if( GPspMusThread < 0 || sceKernelStartThread( GPspMusThread, 0, NULL ) < 0 )
+	{
+		debugf( NAME_Warning, "PSPMUSIC: thread failed (%i)", GPspMusThread );
+		GPspMusThread = -1; PspMusClose(); return 0;
+	}
+	GPspMusStreaming = 1;
+	debugf( NAME_Log, "PSPMUSIC: streaming %s (%i Hz x%i) on hardware channel %i", Path, Rate, GPspMusRatio, GPspMusChan );
+	return 1;
+}
+#endif
+#include "UnRender.h"
+
+/*-----------------------------------------------------------------------------
+	Global implementation.
+-----------------------------------------------------------------------------*/
+
+IMPLEMENT_PACKAGE(NOpenALDrv);
+IMPLEMENT_CLASS(UNOpenALAudioSubsystem);
+
+/*-----------------------------------------------------------------------------
+	UNOpenALAudioSubsystem implementation.
+-----------------------------------------------------------------------------*/
+
+void UNOpenALAudioSubsystem::StaticConstructor()
+{
+	guardSlow(UNOpenALAudioSubsystem::StaticConstructor);
+	UClass* Class = GetClass();
+	new(Class, "OutputRate",         RF_Public)UIntProperty   ( CPP_PROPERTY( OutputRate         ), "Audio", CPF_Config );
+	new(Class, "MusicVolume",        RF_Public)UByteProperty  ( CPP_PROPERTY( MusicVolume        ), "Audio", CPF_Config );
+	new(Class, "SoundVolume",        RF_Public)UByteProperty  ( CPP_PROPERTY( SoundVolume        ), "Audio", CPF_Config );
+	new(Class, "MasterVolume",       RF_Public)UByteProperty  ( CPP_PROPERTY( MasterVolume       ), "Audio", CPF_Config );
+	new(Class, "AmbientFactor",      RF_Public)UFloatProperty ( CPP_PROPERTY( AmbientFactor      ), "Audio", CPF_Config );
+	new(Class, "DopplerFactor",      RF_Public)UFloatProperty ( CPP_PROPERTY( DopplerFactor      ), "Audio", CPF_Config );
+	new(Class, "UseReverb",          RF_Public)UBoolProperty  ( CPP_PROPERTY( UseReverb          ), "Audio", CPF_Config );
+	new(Class, "LowSoundQuality",    RF_Public)UBoolProperty  ( CPP_PROPERTY( LowSoundQuality    ), "Audio", CPF_Config );
+	new(Class, "UseHRTF",            RF_Public)UBoolProperty  ( CPP_PROPERTY( UseHRTF            ), "Audio", CPF_Config );
+	new(Class, "MusicInterpolation", RF_Public)UByteProperty  ( CPP_PROPERTY( MusicInterpolation ), "Audio", CPF_Config );
+	new(Class, "MusicRate",          RF_Public)UIntProperty   ( CPP_PROPERTY( MusicRate          ), "Audio", CPF_Config );
+	new(Class, "MusicMono",          RF_Public)UBoolProperty  ( CPP_PROPERTY( MusicMono          ), "Audio", CPF_Config );
+	// Defaults (on the class default object; the ini is applied over these).
+	OutputRate = DEFAULT_OUTPUT_RATE;
+	MasterVolume = 255;
+	SoundVolume = 127;
+	MusicVolume = 63;
+	AmbientFactor = 0.6f;
+	DopplerFactor = 0.01f;
+	UseHRTF = true;
+	UseReverb = true;
+	LowSoundQuality = false;
+	MusicInterpolation = XMP_INTERP_LINEAR;
+#ifdef __PSP__
+	// libxmp mixes on the CPU; a 333MHz MIPS cannot spare 22kHz stereo with
+	// filters. 11kHz mono, nearest, no DSP is "cheap tracker" quality.
+	MusicRate = 11025;
+	MusicMono = 1;
+#else
+	MusicRate = 0;      // 0 = the device rate
+	MusicMono = 0;
+#endif
+	unguardSlow;
+}
+
+UNOpenALAudioSubsystem::UNOpenALAudioSubsystem()
+{
+	// Config defaults live in StaticConstructor: v400 copies the class
+	// defaults (ini values included) into a new object and THEN runs this
+	// constructor, so anything set here would overwrite the ini.
+}
+
+UBOOL UNOpenALAudioSubsystem::Init()
+{
+	// A native-only class: no script package loads its config, so do it here.
+	LoadConfig();
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::Init)
+
+	Viewport = NULL;
+	Device = NULL;
+	if( DeviceName[0] )
+		Device = alcOpenDevice( DeviceName );
+	if( !Device )
+		Device = alcOpenDevice( NULL );
+	if( !Device )
+	{
+		debugf( NAME_Warning, "Could not open AL device: %04x", alcGetError( NULL ) );
+		return false;
+	}
+
+	if( OutputRate <= 0 )
+		OutputRate = DEFAULT_OUTPUT_RATE;
+	
+	if( DopplerFactor < 0.f )
+		DopplerFactor = 0.f;
+
+	AmbientFactor = Clamp( AmbientFactor, 0.f, 1.f );
+
+	if( MusicInterpolation > XMP_INTERP_SPLINE )
+		MusicInterpolation = XMP_INTERP_SPLINE;
+#ifdef __PSP__
+	Parse( appCmdLine(), "OUTPUTRATE=", OutputRate );   // hardware A/B of the mixer's per-sample cost
+#endif
+	if( MusicRate <= 0 )
+		MusicRate = OutputRate;
+
+#ifdef PSP_NO_EFX
+	// PSP's alext.h has no ALC_SOFT_HRTF, and HRTF is meaningless on the
+	// hardware's stereo output regardless.
+	const ALint AttrList[] = {
+		ALC_FREQUENCY, OutputRate,
+		0
+	};
+#else
+	const ALint AttrList[] = {
+		ALC_FREQUENCY, OutputRate,
+		ALC_SOFT_HRTF, UseHRTF,
+		0
+	};
+#endif
+
+	Ctx = alcCreateContext( Device, AttrList );
+	if( !Ctx )
+	{
+		debugf( NAME_Warning, "Could not create AL context: %04x", alcGetError( Device ) );
+		alcCloseDevice( Device );
+		Device = NULL;
+		return false;
+	}
+
+	alcMakeContextCurrent( Ctx );
+
+	alDistanceModel( AL_LINEAR_DISTANCE_CLAMPED );
+	alDopplerFactor( Max( 0.f, DopplerFactor ) );
+#ifndef PSP_NO_EFX
+	alListenerf( AL_METERS_PER_UNIT, DISTANCE_SCALE );   // EFX listener property
+#endif
+	alListenerf( AL_GAIN, MasterVolume / 255.f );
+
+#ifdef __PSP__
+	// Voices actually mixed. openal-soft's mixer thread took 23% of the CPU
+	// in a four-bot match with 64 sources; UE1 already drops the lowest
+	// priority sound when the voices run out.   [PSP] MaxVoices=16
+	NumSources = 16;
+	GetConfigInt( "PSP", "MaxVoices", NumSources );
+	Parse( appCmdLine(), "MAXVOICES=", NumSources );   // hardware A/B
+	NumSources = Clamp( NumSources, 4, (INT)PSP_MIX_VOICES - 1 );   // one voice stays for the music stream
+	PspMixInit();
+	PspMeReady();   // the ME mixes the effects too, so bring it up now rather than at the first song
+#else
+	NumSources = MAX_SOURCES;
+#endif
+	alGenSources( NumSources, Sources );
+#ifdef __PSP__
+	{
+		ALCint Freq = 0, Mono = 0, Stereo = 0;
+		alcGetIntegerv( Device, ALC_FREQUENCY, 1, &Freq );
+		alcGetIntegerv( Device, ALC_MONO_SOURCES, 1, &Mono );
+		alcGetIntegerv( Device, ALC_STEREO_SOURCES, 1, &Stereo );
+		debugf( NAME_Log, "PSPSND: device freq %d mono %d stereo %d sources %d alErr %04x alcErr %04x master %d sound %d music %d lowquality %d reverb %d rate %d",
+			Freq, Mono, Stereo, NumSources, alGetError(), alcGetError( Device ), MasterVolume, SoundVolume, MusicVolume, LowSoundQuality, UseReverb, OutputRate );
+	}
+#endif
+
+#ifdef __PSP__
+	// Resampler: openal-soft's per-voice choice is the bulk of the mixer's
+	// cost on this CPU. [PSP] Resampler=N or -RESAMPLER=N picks by index
+	// (0 is nearest); the list is logged so the ini can name a valid one.
+	{
+		enum { AL_NUM_RESAMPLERS_SOFT_ = 0x1210, AL_DEFAULT_RESAMPLER_SOFT_ = 0x1211, AL_SOURCE_RESAMPLER_SOFT_ = 0x1212, AL_RESAMPLER_NAME_SOFT_ = 0x1213 };
+		typedef const ALchar* (AL_APIENTRY *PFNALGETSTRINGISOFT)( ALenum, ALsizei );
+		PFNALGETSTRINGISOFT GetStringi = (PFNALGETSTRINGISOFT)alGetProcAddress( "alGetStringiSOFT" );
+		if( alIsExtensionPresent( "AL_SOFT_source_resampler" ) && GetStringi )
+		{
+			const ALint Num = alGetInteger( AL_NUM_RESAMPLERS_SOFT_ ), Def = alGetInteger( AL_DEFAULT_RESAMPLER_SOFT_ );
+			char List[256] = ""; INT Len = 0;
+			for( ALint i = 0; i < Num && Len < 200; ++i ) Len += appSprintf( List + Len, "%s%d=%s", i ? " " : "", (int)i, GetStringi( AL_RESAMPLER_NAME_SOFT_, i ) );
+			INT Pick = -1; GetConfigInt( "PSP", "Resampler", Pick ); Parse( appCmdLine(), "RESAMPLER=", Pick );
+			if( Pick >= 0 && Pick < Num )
+				for( INT i = 0; i < NumSources; ++i ) alSourcei( Sources[i], AL_SOURCE_RESAMPLER_SOFT_, Pick );
+			debugf( NAME_Log, "PSPSND: resamplers %s; default %d, using %d", List, (int)Def, Pick >= 0 && Pick < Num ? Pick : (int)Def );
+		}
+		else
+			debugf( NAME_Log, "PSPSND: AL_SOFT_source_resampler not available" );
+	}
+#endif
+	alGenSources( 1, &MusicSource	);
+	alSourcei( MusicSource, AL_SOURCE_RELATIVE, AL_TRUE );
+	alSource3f( MusicSource, AL_POSITION, 0.f, 0.f, 0.f );
+	alSourcef( MusicSource, AL_ROLLOFF_FACTOR, 0.f );
+	alSourcef( MusicSource, AL_GAIN, MusicVolume / 255.f );
+
+	alGenBuffers( ARRAY_COUNT( MusicBuffers ), MusicBuffers );
+	for( INT i = 0; i < ARRAY_COUNT( MusicBuffers ); ++i )
+	{
+		alBufferData( MusicBuffers[i], MusicMono ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), MusicRate );
+		FreeMusicBuffers[i] = MusicBuffers[i];
+	}
+	NumFreeMusicBuffers = NUM_MUSIC_BUFFERS;
+
+#ifdef __PSP__
+	{
+		INT Rev = UseReverb ? 1 : 0;
+		Parse( appCmdLine(), "REVERB=", Rev );   // hardware A/B: the EAX reverb runs inside the mixer thread
+		UseReverb = Rev != 0;
+		debugf( NAME_Log, "PSPPERF: reverb = %s", UseReverb ? "on" : "off" );
+	}
+#endif
+	if( UseReverb )
+	{
+#ifndef PSP_NO_EFX  // reverb effect + slot creation
+		alGenEffects( 1, &ReverbEffect );
+		InitReverbEffect();
+		alGenAuxiliaryEffectSlots( 1, &ReverbSlot );
+		alAuxiliaryEffectSloti( ReverbSlot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL );
+#endif
+		ReverbOn = false;
+	}
+
+	for( INT i = 0; i < NumSources; ++i )
+		Voices[i].Buffer = INVALID_BUFFER;
+
+	MusicCtx = xmp_create_context();
+	xmp_set_player( MusicCtx, XMP_PLAYER_INTERP, MusicInterpolation );
+#ifdef __PSP__
+	xmp_set_player( MusicCtx, XMP_PLAYER_DSP, 0 );   // no lowpass filtering
+#endif
+
+	// Set ourselves up as the audio subsystem.
+	USound::Audio = this;
+	UMusic::Audio = this;
+
+	// Spawn music streaming thread.
+	StartMusicThread();
+
+	return true;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::Destroy()
+{
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::Destroy)
+
+	StopMusicThread();
+
+	USound::Audio = NULL;
+	UMusic::Audio = NULL;
+
+	if( MusicCtx )
+	{
+		xmp_end_player( MusicCtx );
+		xmp_free_context( MusicCtx );
+		MusicCtx = NULL;
+	}
+
+	if (UseReverb)
+	{
+#ifndef PSP_NO_EFX  // reverb teardown (Destroy)
+		alDeleteAuxiliaryEffectSlots(1, &ReverbSlot);
+		alDeleteEffects(1, &ReverbEffect);
+#endif
+	}
+
+	if( Ctx )
+	{
+		// If we have a context, we probably have everything else. Kill it.
+		SetViewport( NULL ); // This will also stop all sounds.
+		alDeleteBuffers( Buffers.Num(), &Buffers(0) );
+		alDeleteBuffers( ARRAY_COUNT( MusicBuffers ), MusicBuffers );
+		alDeleteSources( NumSources, Sources );
+		alDeleteSources( 1, &MusicSource );
+		alcMakeContextCurrent( NULL );
+		alcDestroyContext( Ctx );
+		Ctx = NULL;
+		Buffers.Empty();
+#ifdef __PSP__
+		GPspSndRecs.Empty(); GPspSndResident = 0;
+#endif
+	}
+
+	if( Device )
+	{
+		// We might still have a device even if we haven't created a context.
+		alcCloseDevice( Device );
+		Device = NULL;
+	}
+
+	Super::Destroy();
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::ShutdownAfterError()
+{
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::Destroy)
+
+	StopMusicThread();
+
+	USound::Audio = NULL;
+	UMusic::Audio = NULL;
+
+	// Shutdown contexts without touching anything else.
+	if( MusicCtx )
+	{
+		xmp_free_context( MusicCtx );
+		MusicCtx = NULL;
+		Music = NULL;
+	}
+	if (UseReverb)
+	{
+#ifndef PSP_NO_EFX  // reverb teardown (ShutdownAfterError)
+		alDeleteAuxiliaryEffectSlots(1, &ReverbSlot);
+		alDeleteEffects(1, &ReverbEffect);
+#endif
+	}
+	if( Ctx )
+	{
+		alcMakeContextCurrent( NULL );
+		alcDestroyContext( Ctx );
+		Ctx = NULL;
+	}
+	if( Device )
+	{
+		alcCloseDevice( Device );
+		Device = NULL;
+	}
+
+	Super::ShutdownAfterError();
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::PostEditChange()
+{
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::PostEditChange)
+
+	Super::PostEditChange();
+
+	FScopedLock Lock( MusicMutex );
+
+	if( DopplerFactor < 0.f )
+		DopplerFactor = 0.f;
+	AmbientFactor = Clamp( AmbientFactor, 0.f, 1.f );
+	MusicInterpolation = Clamp( MusicInterpolation, (BYTE)0, (BYTE)XMP_INTERP_SPLINE );
+
+	if( Ctx )
+	{
+		alListenerf( AL_GAIN, MasterVolume / 255.f );
+		alDopplerFactor( DopplerFactor );
+		alSourcef( MusicSource, AL_GAIN, Max(MusicFade, 0.f) * MusicVolume / 255.f );
+#ifdef __PSP__
+			GPspMusVol = (int)( Max(MusicFade, 0.f) * MusicVolume / 255.f * PSP_AUDIO_VOLUME_MAX );
+#endif
+		// Voice volumes will be updated in Update().
+	}
+
+	if( MusicCtx )
+	{
+		xmp_set_player( MusicCtx, XMP_PLAYER_INTERP, MusicInterpolation );
+	}
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::SetViewport( UViewport* InViewport )
+{
+	guard(UNOpenALAudioSubsystem::SetViewport)
+
+	// Stop all sounds before viewport change.
+	for( INT i = 0; i < NumSources; ++i )
+		StopVoice( i );
+
+	// Stop and free music if the viewport has changed.
+	if( InViewport != Viewport )
+	{
+		if( Music )
+		{
+			UnregisterMusic( Music );
+			Music = NULL;
+		}
+	}
+
+	Viewport = InViewport;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
+{
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::RegisterMusic)
+
+	FScopedLock Lock( MusicMutex );
+
+	if( Music->Handle )
+		return;
+#ifdef __PSP__
+	// The module bytes are dropped once libxmp has parsed them (below); a song
+	// that comes round again is re-read from its package.
+	// v400 lazy arrays: (re)read the module from its package.
+	Music->Data.Load();
+#endif
+	if( !Music->Data.Num() )
+		return;
+
+#ifdef __PSP__
+	if( PspMeReady() )
+	{
+		INT Err = xmp_load_module_from_memory( MusicCtx, &Music->Data(0), Music->Data.Num() );
+		if( Err >= 0 )
+		{
+			Err = xmp_start_player( MusicCtx, GPspMeRate, GPspMeStereo ? 0 : XMP_FORMAT_MONO );
+			if( Err >= 0 && PspMeOpen( MusicCtx, Music->GetName(), MusicVolume ) )
+			{
+				Music->Handle = (void*)3;
+				MusicIsLoaded = true;
+				Music->Data.Unload();   // libxmp holds its own copy of everything it needs
+				return;
+			}
+			if( Err >= 0 )
+				xmp_end_player( MusicCtx );
+			xmp_release_module( MusicCtx );
+		}
+		debugf( NAME_Warning, "PSPMUSIC: `%s` could not go to the Media Engine (%d), trying the file", Music->GetName(), Err );
+	}
+	if( PspMusOpen( Music->GetName(), MusicVolume ) )
+	{
+		Music->Handle = (void*)2;
+		MusicIsLoaded = true;
+		return;
+	}
+#endif
+	INT Err = xmp_load_module_from_memory( MusicCtx, &Music->Data(0), Music->Data.Num() );
+	if( Err < 0 )
+	{
+		debugf( NAME_Warning, "Couldn't load music `%s`: %d", Music->GetName(), Err );
+		return;
+	}
+
+	Err = xmp_start_player( MusicCtx, MusicRate, MusicMono ? XMP_FORMAT_MONO : 0 );
+	if( Err < 0 )
+	{
+		xmp_release_module( MusicCtx );
+		debugf( NAME_Warning, "Couldn't start player on `%s`: %d", Music->GetName(), Err );
+		return;
+	}
+
+	Music->Handle = (void*)1;
+	MusicIsLoaded = true;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::UnregisterMusic( UMusic* Music )
+{
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::UnregisterMusic)
+
+	FScopedLock Lock( MusicMutex );
+
+	StopMusic();
+	ClearMusicBuffers();
+#ifdef __PSP__
+	if( GPspMusStreaming )
+	{
+		const UBOOL WasME = GPspMeActive;
+		PspMusClose();          // stops the ME (and waits) before the context is torn down below
+		if( !WasME )
+		{
+			MusicIsLoaded = false;
+			return;
+		}
+	}
+#endif
+	if( MusicCtx )
+	{
+		xmp_end_player( MusicCtx );
+		if( MusicIsLoaded )
+			xmp_release_module( MusicCtx );
+	}
+
+	MusicIsLoaded = false;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::RegisterSound( USound* Sound )
+{
+	guard(UNOpenALAudioSubsystem::RegisterSound)
+#ifdef __PSP__
+#endif
+
+	if( Sound->Handle )
+		return;
+
+	// v400 lazy arrays: the samples are read from the package on demand
+	// (and dropped again once the mixer has its copy, see below).
+	Sound->Data.Load();
+	if( Sound->Handle )
+		return;   // FSoundData::Load registers the sound itself (re-entering here)
+	if( !Sound->Data.Num() )
+	{
+		debugf( NAME_Warning, "RegisterSound: `%s` has no data", Sound->GetName() );
+		return;
+	}
+
+	FWaveModInfo WaveInfo;
+	if( !WaveInfo.ReadWaveInfo( Sound->Data ) )
+	{
+		debugf( NAME_Warning, "Sound %s is not a valid WAV file", Sound->GetName() );
+		return;
+	}
+
+#ifdef __PSP__
+	{
+		const INT Budget = PspSndBudgetKB() * 1024;
+		const INT Need   = (INT)WaveInfo.SampleDataSize;
+		while( GPspSndResident + Need > Budget && GPspSndRecs.Num() )
+		{
+			INT Best = -1;
+			for( INT i = 0; i < GPspSndRecs.Num(); ++i )
+			{
+				UBOOL InUse = 0;
+				for( INT v = 0; v < NumSources && !InUse; ++v )
+					InUse = ( Voices[v].Sound == GPspSndRecs(i).Sound );
+				if( !InUse && ( Best < 0 || GPspSndRecs(i).Stamp < GPspSndRecs(Best).Stamp ) )
+					Best = i;
+			}
+			if( Best < 0 ) break;   // everything resident is playing; go over budget rather than cut a voice
+			USound* Victim = GPspSndRecs(Best).Sound;
+			if( PspSndLog() )
+				debugf( NAME_Log, "PSPSND: evict %s (%d KB) for %s (%d KB); resident %d KB", Victim->GetName(), GPspSndRecs(Best).Bytes / 1024, Sound->GetName(), Need / 1024, GPspSndResident / 1024 );
+			++GPspSndEvicted;
+			UnregisterSound( Victim );   // drops its record too
+		}
+	}
+#endif
+	ALuint Buf = 0;
+	alGenBuffers( 1, &Buf );
+	Buffers.AddItem( Buf );
+
+	ALenum Format = AL_FORMAT_MONO8;
+	if( PspRd16( WaveInfo.pChannels ) == 2 )
+	{
+		if( PspRd16( WaveInfo.pBitsPerSample ) == 16 )
+			Format = AL_FORMAT_STEREO16;
+		else
+			Format = AL_FORMAT_STEREO8;
+	}
+	else
+	{
+		if( PspRd16( WaveInfo.pBitsPerSample ) == 16 )
+			Format = AL_FORMAT_MONO16;
+		else
+			Format = AL_FORMAT_MONO8;
+	}
+
+	alBufferData( Buf, Format, (const void*)WaveInfo.SampleDataStart, WaveInfo.SampleDataSize, PspRd32( WaveInfo.pSamplesPerSec ) );
+#ifdef __PSP__
+	// OpenAL now holds the samples; the engine's copy is dead weight on a
+	// console with ~38MB. Freed unless the ini says otherwise. A later
+	// re-registration (audio restart) finds Data empty and skips the sound.
+	{
+		static INT FreeData = -1;
+		if( FreeData < 0 ) { FreeData = 1; GetConfigInt( "PSP", "FreeSoundData", FreeData ); }
+		if( FreeData )
+		{
+			Sound->Data.Unload();   // a lazy array: re-read from the package if needed again
+		}
+	}
+#endif
+
+	Sound->Handle = (void*)Buf;
+	if( !GPspLooping )
+		GPspLooping = new TMap<USound*,UBOOL>;
+	GPspLooping->Set( Sound, WaveInfo.SampleLoopsNum != 0 ); // the only indication of looping
+#ifdef __PSP__
+	{
+		FPspSndRec Rec; Rec.Sound = Sound; Rec.Bytes = (INT)WaveInfo.SampleDataSize; Rec.Stamp = ++GPspSndClock;
+		GPspSndRecs.AddItem( Rec );
+		GPspSndResident += Rec.Bytes;
+	}
+#endif
+#ifdef __PSP__
+	{
+		static INT Count = 0;
+		if( PspSndLog() && ++Count <= 8 )
+			debugf( NAME_Log, "PSPSND: registered %s buf %u fmt %04x bytes %u rate %u alErr %04x", Sound->GetName(), Buf, Format, (unsigned)WaveInfo.SampleDataSize, (unsigned)PspRd32( WaveInfo.pSamplesPerSec ), alGetError() );
+	}
+#endif
+
+	if( !GIsEditor )
+		Sound->Data.Unload();
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::UnregisterSound( USound* Sound )
+{
+	guard(UNOpenALAudioSubsystem::UnregisterSound)
+
+	check( Sound );
+
+	if( Sound->Handle )
+	{
+		ALuint Buf = (ALuint)Sound->Handle;
+		check( alIsBuffer( Buf ) );
+
+		for( INT i = 0; i < NumSources; ++i )
+		{
+			if( Voices[i].Sound == Sound )
+				StopVoice( i );
+		}
+
+		Buffers.RemoveItem( Buf );
+		alDeleteBuffers( 1, &Buf );
+
+		Sound->Handle = NULL;
+#ifdef __PSP__
+		PspSndForget( Sound );
+#endif
+	}
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::UpdateVoice( INT Num, const ENVoiceOp Op )
+{
+	guard(UNOpenALAudioSubsystem::UpdateVoice)
+
+	FNVoice& Voice = Voices[Num];
+
+	// Swap position and velocity into AL space.
+	FVector ALVelocity;
+	ALVelocity.X = Voice.Velocity.X;
+	ALVelocity.Y = Voice.Velocity.Y;
+	ALVelocity.Z = -Voice.Velocity.Z;
+
+	// If the source is close enough to the listener, don't spatialize it.
+	DWORD SourceRelative;
+	FVector ALLocation;
+	if( FDistSquared( ListenerCoords.Origin, Voice.Location ) < Square( Voice.Radius * DESPATIALIZE_FACTOR ) )
+	{
+		SourceRelative = AL_TRUE;
+		ALLocation.X = 0.f;
+		ALLocation.Y = 0.f;
+		ALLocation.Z = 0.f;
+		// If the source is ON the listener, also reset the velocity so we don't doppler our own voice.
+		if( Viewport && Viewport->Actor && Voice.Actor == Viewport->Actor )
+		{
+			ALVelocity.X = 0.f;
+			ALVelocity.Y = 0.f;
+			ALVelocity.Z = 0.f;
+		}
+	}
+	else
+	{
+		SourceRelative = AL_FALSE;
+		ALLocation.X = Voice.Location.X;
+		ALLocation.Y = Voice.Location.Y;
+		ALLocation.Z = -Voice.Location.Z;
+	}
+
+	// Set up AL source.
+	ALuint Source = Sources[Num];
+	alSourcei( Source, AL_SOURCE_RELATIVE, SourceRelative );
+	alSourcef( Source, AL_GAIN, Voice.Volume * ( SoundVolume / 255.f ) );
+	alSourcef( Source, AL_PITCH, Voice.Pitch );
+	alSourcef( Source, AL_MAX_DISTANCE, Voice.Radius );
+	alSourcef( Source, AL_REFERENCE_DISTANCE, Voice.Radius * DESPATIALIZE_FACTOR );
+	alSourcef( Source, AL_ROLLOFF_FACTOR, ROLLOFF_FACTOR );
+	alSourcefv( Source, AL_POSITION, &ALLocation.X );
+	alSourcefv( Source, AL_VELOCITY, &ALVelocity.X );
+	alSourcei( Source, AL_LOOPING, Voice.Looping );
+
+	if( Voice.BufferChanged )
+	{
+		Voice.BufferChanged = false;
+		INT State = AL_STOPPED;
+		alGetSourcei( Source, AL_SOURCE_STATE, &State );
+		if( State == AL_PLAYING || State == AL_PAUSED )
+			alSourceStop( Source );
+		alSourcei( Source, AL_BUFFER, Voice.Buffer );
+		if( State == AL_PLAYING || State == AL_PAUSED )
+		{
+			alSourcePlay( Source );
+			if( State == AL_PAUSED )
+				alSourcePause( Source );
+		}
+	}
+
+	if( UseReverb && Op == NVOP_Play )
+	{
+#ifndef PSP_NO_EFX  // per-source reverb send
+		alSource3i( Source, AL_AUXILIARY_SEND_FILTER, (ALint)ReverbSlot, 0, AL_FILTER_NULL );
+#endif
+		// (with EFX compiled out this body is empty; without the braces the
+		// play/stop switch below became the if body and effects went silent
+		// whenever UseReverb was False)
+	}
+
+	// Play or stop if needed.
+	switch( Op )
+	{
+		case ENVoiceOp::NVOP_Play:  alSourcePlay( Source );
+#ifdef __PSP__
+			{
+				static INT Count = 0;
+				if( PspSndLog() && ++Count <= 24 )
+				{
+					ALint State = 0, Buf = 0; ALfloat Gain = -1.f;
+					alGetSourcei( Source, AL_SOURCE_STATE, &State ); alGetSourcei( Source, AL_BUFFER, &Buf ); alGetSourcef( Source, AL_GAIN, &Gain );
+					debugf( NAME_Log, "PSPSND: voice %d src %u state %04x buf %d gain %.2f rel %d alErr %04x", Num, Source, State, Buf, Gain, (INT)SourceRelative, alGetError() );
+				}
+			}
+#endif
+			break;
+		case ENVoiceOp::NVOP_Pause: alSourcePause( Source ); break;
+		case ENVoiceOp::NVOP_Stop:  alSourceStop( Source ); break;
+		default: break;
+	}
+
+	unguard;
+}
+
+UBOOL UNOpenALAudioSubsystem::PlaySound( AActor* Actor, INT Id, USound* Sound, FVector Location, FLOAT Volume, FLOAT Radius, FLOAT Pitch )
+{
+	guard(UNOpenALAudioSubsystem::PlaySound)
+
+	if( !Viewport )
+		return false;
+
+	// Allocate a new slot if requested.
+	if( SOUND_SLOT_IS( Id, SLOT_None ) )
+		Id = 16 * --NextId;
+
+	FLOAT Priority = GetVoicePriority( Location, Volume, Radius );
+	FLOAT MaxPriority = Priority;
+	FNVoice* Voice = NULL;
+	for( INT i = 0; i < NumSources; ++i )
+	{
+		FNVoice* V = &Voices[i];
+		if( ( V->Id & ~1 ) == ( Id & ~1 ) )
+		{
+			// Skip if not interruptable.
+			if( Id & 1 )
+				return false;
+			StopVoice( i );
+			Voice = V;
+			break;
+		}
+		else if( V->Priority <= MaxPriority )
+		{
+			MaxPriority = V->Priority;
+			Voice = V;
+		}
+	}
+
+#ifdef __PSP__
+	// Deferred sound: not registered yet (or evicted by the sound budget).
+	// RegisterSound loads its lazy data from the package and uploads it.
+	if( Voice && Sound && !Sound->Handle )
+		RegisterSound( Sound );
+#endif
+	// If we ran out of voices or the sound is too low priority, bail.
+#ifdef __PSP__
+	{
+		static INT Count = 0;
+		if( PspSndLog() && ++Count <= 24 )
+			debugf( NAME_Log, "PSPSND: play %s handle %p voice %d vol %.2f radius %.0f data %d viewport %d", Sound ? Sound->GetName() : "NULL", Sound ? Sound->Handle : NULL, Voice ? (INT)(Voice - Voices) : -1, Volume, Radius, Sound ? Sound->Data.Num() : -1, Viewport != NULL );
+	}
+#endif
+	if( !Voice || !Sound || !Sound->Handle )
+		return false;
+#ifdef __PSP__
+	PspSndTouch( Sound );
+#endif
+
+	ALuint Buf = (ALuint)Sound->Handle;
+	check( alIsBuffer( Buf ) );
+
+	Voice->Id = Id;
+	Voice->BufferChanged = ( Buf != Voice->Buffer );
+	Voice->Buffer = Buf;
+	Voice->Location = Location;
+	Voice->Velocity = Actor ? Actor->Velocity : FVector();
+	Voice->Volume = Clamp( Volume, 0.f, 1.f );
+	Voice->Radius = Radius;
+	Voice->Pitch = Pitch;
+	Voice->Priority = Priority;
+	Voice->Actor = Actor;
+	Voice->Looping = PspSoundLoops( Sound );
+	Voice->Sound = Sound;
+
+	// Start the voice.
+	UpdateVoice( Voice - Voices, NVOP_Play );
+
+	return true;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::NoteDestroy( AActor* Actor )
+{
+	guard(UNOpenALAudioSubsystem::NoteDestroy)
+
+	check(Actor);
+	check(Actor->IsValid());
+	for( INT i = 0; i < NumSources; ++i)
+	{
+		if( Voices[i].Actor == Actor )
+		{
+			if( SOUND_SLOT_IS( Voices[i].Id, SLOT_Ambient ) )
+			{
+				// Stop ambient sound when actor dies.
+				StopVoice( i );
+			}
+			else
+			{
+				// Unbind regular sounds from actors.
+				Voices[i].Actor = NULL;
+			}
+		}
+	}
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::StopVoice( INT Num )
+{
+	guard(UNOpenALAudioSubsystem::StopVoice)
+
+	FNVoice& Voice = Voices[Num];
+
+	alSourcei( Sources[Num], AL_LOOPING, AL_FALSE );
+	alSourceStop( Sources[Num] );
+
+	if( Voice.Buffer != INVALID_BUFFER )
+	{
+		Voice.Buffer = INVALID_BUFFER;
+		alSourcei( Sources[Num], AL_BUFFER, 0 );
+	}
+
+	Voice.Priority = 0.f;
+	Voice.Sound = NULL;
+	Voice.Actor = NULL;
+	Voice.Looping = false;
+	Voice.Id = 0;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::PlayMusic()
+{
+#ifdef PSP_NO_MUSIC
+	return;   // built with -DPSP_NO_MUSIC=ON
+#endif
+	guard(UNOpenALAudioSubsystem::PlayMusic)
+
+	FScopedLock Lock( MusicMutex );
+
+#ifdef __PSP__
+	if( GPspMusStreaming )
+	{
+		if( GPspMeActive )
+		{
+			GPspMe->Arg = (u32)MusicSection;   // interactive music: the ME jumps to the section
+			GPspMe->Cmd = 2;
+		}
+		else
+			GPspMusRewind = 1;   // file: sections are not rendered separately; restart the loop
+		GPspMusPlaying = 1;
+		MusicIsPlaying = true;
+		return;
+	}
+#endif
+	alSourceStop(MusicSource);
+	ClearMusicBuffers();
+	xmp_set_position( MusicCtx, MusicSection );
+
+	ALint State = 0;
+	alGetSourcei( MusicSource, AL_SOURCE_STATE, &State );
+	if( State != AL_PLAYING )
+		alSourcePlay( MusicSource );
+
+	MusicIsPlaying = true;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::StopMusic()
+{
+	guard(UNOpenALAudioSubsystem::StopMusic)
+
+	FScopedLock Lock( MusicMutex );
+
+	MusicIsPlaying = false;
+#ifdef __PSP__
+	GPspMusPlaying = 0;
+#endif
+	alSourceStop( MusicSource );
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::Update( FPointRegion Region, FCoords& Listener )
+{
+	guard(UNOpenALAudioSubsystem::Update)
+#ifdef __PSP__
+	{
+		static INT Frames = 0;
+		if( ++Frames % 150 == 0 )
+		{
+			INT Playing = 0;
+			for( INT i = 0; i < NumSources; ++i ) { ALint St = 0; alGetSourcei( Sources[i], AL_SOURCE_STATE, &St ); if( St == AL_PLAYING ) ++Playing; }
+			debugf( NAME_Log, "PSPSND: resident %d KB in %d sounds (budget %d KB, %d evicted); %d of %d voices playing; mixer %s, %u blocks, %u underruns", GPspSndResident / 1024, GPspSndRecs.Num(), PspSndBudgetKB(), GPspSndEvicted, Playing, NumSources,
+				GPspMix ? ( GPspMix->Enable ? "on the ME" : "on the CPU" ) : "none", GPspMix ? (unsigned)GPspMix->Read : 0u, GPspMix ? (unsigned)GPspMix->Underruns : 0u );
+			// -SNDLOG: what each playing voice is (looping sounds that never stop)
+			if( PspSndLog() )
+				for( INT i = 0; i < NumSources; ++i )
+				{
+					ALint St = 0; alGetSourcei( Sources[i], AL_SOURCE_STATE, &St );
+					if( St != AL_PLAYING || !Voices[i].Sound ) continue;
+					const FLOAT Dist = Viewport && Viewport->Actor ? FDist( Viewport->Actor->Location, Voices[i].Location ) : -1.f;
+					debugf( NAME_Log, "PSPSND:   voice %2d %-24s actor %-20s slot %2d looping %d vol %.2f radius %.0f dist %.0f", i, Voices[i].Sound->GetName(),
+						Voices[i].Actor ? Voices[i].Actor->GetClass()->GetName() : "(none)", ( Voices[i].Id & 14 ) / 2, (INT)Voices[i].Looping, Voices[i].Volume, Voices[i].Radius, Dist );
+				}
+		}
+	}
+#endif
+
+	if( !Viewport || !Viewport->IsRealtime() )
+		return;
+
+	// Update AL listener position, velocity and orientation.
+	FVector ALPosition;
+	ALPosition.X = Listener.Origin.X;
+	ALPosition.Y = Listener.Origin.Y;
+	ALPosition.Z = -Listener.Origin.Z;
+	FVector ALVelocity;
+	if( Viewport->Actor )
+	{
+		ALVelocity.X = Viewport->Actor->Velocity.X;
+		ALVelocity.Y = Viewport->Actor->Velocity.Y;
+		ALVelocity.Z = -Viewport->Actor->Velocity.Z;
+	}
+	FLOAT ALOrientation[] = {
+		+Listener.ZAxis.X,
+		+Listener.ZAxis.Y,
+		-Listener.ZAxis.Z,
+		-Listener.YAxis.X,
+		-Listener.YAxis.Y,
+		+Listener.YAxis.Z,
+	};
+	alListenerfv( AL_POSITION, &ALPosition.X );
+	alListenerfv( AL_VELOCITY, &ALVelocity.X );
+	alListenerfv( AL_ORIENTATION, ALOrientation );
+	ListenerCoords = Listener;
+
+	if( UseReverb )
+		UpdateReverb( Region );
+
+	// Start new ambient sounds if needed.
+	if( Viewport->Actor && Viewport->Actor->XLevel )
+	{
+		for( INT i = 0; i < Viewport->Actor->XLevel->Actors.Num(); i++ )
+		{
+			AActor* Actor = Viewport->Actor->XLevel->Actors(i);
+			if( !Actor || !Actor->IsValid() )
+				continue;
+
+			const FLOAT DistSq = FDistSquared( Viewport->Actor->Location, Actor->Location );
+			const FLOAT AmbRad = Square( Actor->WorldSoundRadius() );
+			if( !Actor->AmbientSound || DistSq > AmbRad )
+				continue;
+
+			// See if it's already playing.
+			INT Id = AMBIENT_SOUND_ID( Actor->GetIndex() );
+			INT AmbientNum;
+			for( AmbientNum = 0; AmbientNum < NumSources; ++AmbientNum )
+			{
+				if( Voices[AmbientNum].Id == Id )
+					break;
+			}
+
+			// If not, start it.
+			if( AmbientNum == NumSources )
+			{
+				FLOAT Vol = AmbientFactor * Actor->SoundVolume / 255.f;
+				FLOAT Rad = Actor->WorldSoundRadius();
+				FLOAT Pitch = Actor->SoundPitch / 64.f;
+				PlaySound( Actor, Id, Actor->AmbientSound, Actor->Location, Vol, Rad, Pitch );
+			}
+		}
+	}
+
+	// Update active ambient sounds.
+	for( INT VoiceNum = 0; VoiceNum < NumSources; ++VoiceNum )
+	{
+		FNVoice& Voice = Voices[VoiceNum];
+		if( !Voice.Id || !Voice.Sound || Voice.Buffer == INVALID_BUFFER || !SOUND_SLOT_IS( Voice.Id, SLOT_Ambient ) )
+			continue;
+
+		check( Voice.Actor );
+
+		const FLOAT DistSq = FDistSquared( Viewport->Actor->Location, Voice.Actor->Location );
+		const FLOAT AmbRad = Square( Voice.Actor->WorldSoundRadius() );
+		if( Voice.Sound != Voice.Actor->AmbientSound || DistSq > AmbRad )
+		{
+			// Sound changed or went out of range.
+			StopVoice( VoiceNum );
+		}
+		else
+		{
+			// Update parameters. These will be applied in the loop below.
+			Voice.Radius = Voice.Actor->WorldSoundRadius();
+			Voice.Pitch = Voice.Actor->SoundPitch / 64.f;
+			Voice.Volume = AmbientFactor * Voice.Actor->SoundVolume / 255.f;
+			if( Voice.Actor->LightType != LT_None )
+				Voice.Volume *= Voice.Actor->LightBrightness / 255.f;
+		}
+	}
+
+	// Update all active voices.
+	for( INT VoiceNum = 0; VoiceNum < NumSources; ++VoiceNum )
+	{
+		FNVoice& Voice = Voices[VoiceNum];
+		if( !Voice.Id || !Voice.Sound || Voice.Buffer == INVALID_BUFFER )
+			continue;
+
+		ALuint Source = Sources[VoiceNum];
+		ALint SourceState;
+		alGetSourcei( Source, AL_SOURCE_STATE, &SourceState );
+		if( SourceState == AL_STOPPED )
+		{
+			// Voice has finished playing.
+			StopVoice( VoiceNum );
+		}
+		else if( SourceState == AL_PLAYING )
+		{
+			// Voice is playing, update its location and priority.
+			if( Voice.Actor && Voice.Actor->IsValid() )
+			{
+				Voice.Location = Voice.Actor->Location;
+				Voice.Velocity = Voice.Actor->Velocity;
+			}
+			Voice.Priority = GetVoicePriority( Voice.Location, Voice.Volume, Voice.Radius );
+			// Update AL source.
+			UpdateVoice( VoiceNum );
+		}
+	}
+
+	// Update music.
+	DOUBLE DeltaTime = appSeconds() - MusicTime;
+	MusicTime += DeltaTime;
+	DeltaTime = Clamp( DeltaTime, (DOUBLE)0.0, (DOUBLE)1.0 );
+	if( Viewport->Actor && Viewport->Actor->Transition != MTRAN_None )
+	{
+		// Track is changing.
+		UBOOL MusicChanged = Music != Viewport->Actor->Song;
+		if( Music )
+		{
+			// Already playing something, figure out if we're ready to change.
+			UBOOL MusicDone = false;
+			if( MusicSection == 255 )
+			{
+				MusicDone = true;
+			}
+			else if( Viewport->Actor->Transition == MTRAN_Fade )
+			{
+				MusicFade -= DeltaTime;
+				MusicDone = ( MusicFade < -2.f / 1000.f );
+			}
+			else if( Viewport->Actor->Transition == MTRAN_SlowFade )
+			{
+				MusicFade -= DeltaTime * 0.2;
+				MusicDone = ( MusicFade < 0.2f * -2.f / 1000.f );
+			}
+			else if( Viewport->Actor->Transition == MTRAN_FastFade )
+			{
+				MusicFade -= DeltaTime * 3.0;
+				MusicDone = ( MusicFade < 3.0f * -2.f / 1000.f );
+			}
+			else
+			{
+				MusicDone = true;
+			}
+
+			MusicMutex.Lock();
+
+			if( MusicDone )
+			{
+				if( Music && MusicChanged )
+					UnregisterMusic( Music );
+				Music = NULL;
+			}
+			else
+			{
+				alSourcef( MusicSource, AL_GAIN, Max(MusicFade, 0.f) * MusicVolume / 255.f );
+#ifdef __PSP__
+			GPspMusVol = (int)( Max(MusicFade, 0.f) * MusicVolume / 255.f * PSP_AUDIO_VOLUME_MAX );
+#endif
+			}
+
+			MusicMutex.Unlock();
+		}
+
+		if( Music == NULL )
+		{
+			FScopedLock Lock( MusicMutex );
+			MusicFade = 1.f;
+			alSourcef( MusicSource, AL_GAIN, Max(MusicFade, 0.f) * MusicVolume / 255.f );
+#ifdef __PSP__
+			GPspMusVol = (int)( Max(MusicFade, 0.f) * MusicVolume / 255.f * PSP_AUDIO_VOLUME_MAX );
+#endif
+			Music = Viewport->Actor->Song;
+			MusicSection = Viewport->Actor->SongSection;
+			if( Music )
+			{
+				if( MusicChanged )
+					RegisterMusic( Music );
+				if( MusicSection != 255 )
+					PlayMusic();
+				else
+					StopMusic();
+			}
+			Viewport->Actor->Transition = MTRAN_None;
+		}
+	}
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::UpdateMusicBuffers()
+{
+#ifdef PSP_NO_MUSIC
+	return;   // built with -DPSP_NO_MUSIC=ON
+#endif
+	guard(UNOpenALAudioSubsystem::UpdateMusicBuffers)
+
+	FScopedLock Lock( MusicMutex );
+
+	// First dequeue the buffers that are done playing and put them into the buffer pool
+	ALint BuffersProcessed = 0;
+	ALint BuffersQueued = 0;
+	ALint State = AL_STOPPED;
+	alGetSourcei( MusicSource, AL_BUFFERS_PROCESSED, &BuffersProcessed );
+	alGetSourcei( MusicSource, AL_BUFFERS_QUEUED, &BuffersQueued );
+	alGetSourcei( MusicSource, AL_SOURCE_STATE, &State );
+	if( BuffersProcessed > 0 && NumFreeMusicBuffers < NUM_MUSIC_BUFFERS )
+	{
+		const INT NumToUnqueue = Min( NUM_MUSIC_BUFFERS - NumFreeMusicBuffers, BuffersProcessed );
+		alSourceUnqueueBuffers( MusicSource, NumToUnqueue, &FreeMusicBuffers[NumFreeMusicBuffers] );
+		NumFreeMusicBuffers += NumToUnqueue;
+	}
+
+	if( !Music || !MusicIsPlaying || MusicSection == 255 || !MusicCtx )
+		return;
+#ifdef __PSP__
+	if( GPspMusStreaming )
+		return;
+#endif
+
+	// If music is playing, render and queue more buffers if available
+	while( BuffersQueued < NUM_MUSIC_BUFFERS && NumFreeMusicBuffers )
+	{
+		if( xmp_play_buffer( MusicCtx, MusicBufferData, sizeof( MusicBufferData ), 0 ) < 0 )
+			break;
+		alBufferData( FreeMusicBuffers[NumFreeMusicBuffers - 1], MusicMono ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), MusicRate );
+		alSourceQueueBuffers( MusicSource, 1, &FreeMusicBuffers[NumFreeMusicBuffers - 1] );
+		--NumFreeMusicBuffers;
+		++BuffersQueued;
+	}
+
+	// If it stopped because it ran out of buffers, restart it
+	if( BuffersQueued > 0 && ( State == AL_INITIAL || State == AL_STOPPED ) )
+		alSourcePlay( MusicSource );
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::ClearMusicBuffers()
+{
+	guard(UNOpenALAudioSubsystem::ClearMusicBuffers)
+
+	FScopedLock Lock( MusicMutex );
+
+	appMemset( (void*)MusicBufferData, 0, sizeof(MusicBufferData) );
+
+	ALint BuffersProcessed = 0;
+	alGetSourcei( MusicSource, AL_BUFFERS_PROCESSED, &BuffersProcessed );
+	if( BuffersProcessed > 0 && NumFreeMusicBuffers < NUM_MUSIC_BUFFERS )
+	{
+		const INT NumToUnqueue = Min( NUM_MUSIC_BUFFERS - NumFreeMusicBuffers, BuffersProcessed );
+		alSourceUnqueueBuffers( MusicSource, NumToUnqueue, &FreeMusicBuffers[NumFreeMusicBuffers] );
+		NumFreeMusicBuffers += NumToUnqueue;
+	}
+
+	for( INT i = 0; i < NumFreeMusicBuffers; ++i )
+		alBufferData( FreeMusicBuffers[i], MusicMono ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16, MusicBufferData, sizeof( MusicBufferData ), MusicRate );
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::UpdateReverb( FPointRegion& Region )
+{
+#ifdef PSP_NO_EFX
+	// No efx.h on PSP, so reverb is compiled out entirely. Positional audio
+	// and music are unaffected.
+	(void)Region;
+#else
+	guard(UNOpenALAudioSubsystem::UpdateReverb)
+
+	const UBOOL bNewReverb = ( Viewport->Actor && Viewport->Actor->Region.Zone && Viewport->Actor->Region.Zone->bReverbZone );
+
+	if( !bNewReverb && ReverbOn )
+	{
+		// Just turn it off.
+		ReverbOn = false;
+		ReverbZone = NULL;
+		// TODO: is there a better way to toggle this?
+		alAuxiliaryEffectSloti( ReverbSlot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL );
+		return;
+	}
+
+	ReverbOn = bNewReverb;
+
+	if( ReverbOn )
+	{
+		AZoneInfo* NewReverbZone = Viewport->Actor->Region.Zone;
+		if( NewReverbZone != ReverbZone )
+		{
+			// Reverb zone changed.
+			ReverbZone = NewReverbZone;
+			// Unbind effect, change parameters, then bind again.
+			alAuxiliaryEffectSloti( ReverbSlot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL );
+			alEffectf( ReverbEffect, AL_EAXREVERB_GAIN, ReverbZone->MasterGain / 255.f );
+			// TODO: figure out how to convert Galaxy Audio reverb to this
+			alAuxiliaryEffectSloti( ReverbSlot, AL_EFFECTSLOT_EFFECT, ReverbEffect );
+		}
+	}
+
+	unguard;
+#endif
+}
+
+void UNOpenALAudioSubsystem::InitReverbEffect()
+{
+	guard(UNOpenALAudioSubsystem::InitReverbEffect)
+
+#ifndef PSP_NO_EFX  // reverb parameter block
+	EFXEAXREVERBPROPERTIES Reverb = EFX_REVERB_PRESET_GENERIC;
+	alEffecti( ReverbEffect, AL_EFFECT_TYPE, AL_EFFECT_EAXREVERB );
+	alEffectf( ReverbEffect, AL_EAXREVERB_DENSITY, Reverb.flDensity );
+	alEffectf( ReverbEffect, AL_EAXREVERB_DIFFUSION, Reverb.flDiffusion );
+	alEffectf( ReverbEffect, AL_EAXREVERB_GAIN, Reverb.flGain );
+	alEffectf( ReverbEffect, AL_EAXREVERB_GAINHF, Reverb.flGainHF );
+	alEffectf( ReverbEffect, AL_EAXREVERB_GAINLF, Reverb.flGainLF );
+	alEffectf( ReverbEffect, AL_EAXREVERB_DECAY_TIME, Reverb.flDecayTime );
+	alEffectf( ReverbEffect, AL_EAXREVERB_DECAY_HFRATIO, Reverb.flDecayHFRatio );
+	alEffectf( ReverbEffect, AL_EAXREVERB_DECAY_LFRATIO, Reverb.flDecayLFRatio );
+	alEffectf( ReverbEffect, AL_EAXREVERB_REFLECTIONS_GAIN, Reverb.flReflectionsGain);
+	alEffectf( ReverbEffect, AL_EAXREVERB_REFLECTIONS_DELAY, Reverb.flReflectionsDelay );
+	alEffectfv( ReverbEffect, AL_EAXREVERB_REFLECTIONS_PAN, Reverb.flReflectionsPan );
+	alEffectf( ReverbEffect, AL_EAXREVERB_LATE_REVERB_GAIN, Reverb.flLateReverbGain );
+	alEffectf( ReverbEffect, AL_EAXREVERB_LATE_REVERB_DELAY, Reverb.flLateReverbDelay );
+	alEffectfv( ReverbEffect, AL_EAXREVERB_LATE_REVERB_PAN, Reverb.flLateReverbPan );
+	alEffectf( ReverbEffect, AL_EAXREVERB_ECHO_TIME, Reverb.flEchoTime );
+	alEffectf( ReverbEffect, AL_EAXREVERB_ECHO_DEPTH, Reverb.flEchoDepth );
+	alEffectf( ReverbEffect, AL_EAXREVERB_MODULATION_TIME, Reverb.flModulationTime );
+	alEffectf( ReverbEffect, AL_EAXREVERB_MODULATION_DEPTH, Reverb.flModulationDepth );
+	alEffectf( ReverbEffect, AL_EAXREVERB_AIR_ABSORPTION_GAINHF, Reverb.flAirAbsorptionGainHF );
+	alEffectf( ReverbEffect, AL_EAXREVERB_HFREFERENCE, Reverb.flHFReference );
+	alEffectf( ReverbEffect, AL_EAXREVERB_LFREFERENCE, Reverb.flLFReference );
+	alEffectf( ReverbEffect, AL_EAXREVERB_ROOM_ROLLOFF_FACTOR, Reverb.flRoomRolloffFactor );
+	alEffecti( ReverbEffect, AL_EAXREVERB_DECAY_HFLIMIT, Reverb.iDecayHFLimit );
+#endif
+
+	unguard;
+}
+
+UBOOL UNOpenALAudioSubsystem::Exec( const TCHAR* Cmd, FOutputDevice& Ar )
+{
+	FOutputDevice* Out = &Ar;
+	FPspXmpScope XmpScope;   // libxmp allocations become ME-safe blocks (see __wrap__malloc_r)
+	guard(UNOpenALAudioSubsystem::Exec)
+
+	if( ParseCommand( &Cmd, "MusicOrder") )
+	{
+		if( Music && MusicCtx )
+		{
+			FScopedLock Lock( MusicMutex );
+			INT Pos = atoi( Cmd );
+			Out->Logf( "Set music position to %d", Pos );
+			xmp_set_position( MusicCtx, Pos );
+			MusicSection = Pos;
+			return true;
+		}
+	}
+	else if( ParseCommand( &Cmd, "MusicInterp" ) )
+	{
+		FScopedLock Lock( MusicMutex );
+		MusicInterpolation = Clamp( atoi( Cmd ), 0, XMP_INTERP_SPLINE );
+		if( MusicCtx )
+			xmp_set_player( MusicCtx, XMP_PLAYER_INTERP, MusicInterpolation );
+		return true;
+	}
+
+	return false;
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::StartMusicThread()
+{
+	guard(UNOpenALAudioSubsystem::StartMusicThread)
+
+	// This isn't an atomic because we only set it before the thread starts and before we wait on it to join.
+	MusicThreadRunning = true;
+
+	MusicThread = appThreadSpawn( MusicThreadProc, (void*)this, "MusicThread", true, nullptr );
+	check(MusicThread);
+
+	unguard;
+}
+
+void UNOpenALAudioSubsystem::StopMusicThread()
+{
+	guard(UNOpenALAudioSubsystem::StopMusicThread)
+
+	if( MusicThread )
+	{
+		MusicThreadRunning = false;
+		appThreadJoin( MusicThread );
+		MusicThread = nullptr;
+	}
+
+	unguard;
+}
+
+#ifdef PLATFORM_WIN32
+DWORD __stdcall UNOpenALAudioSubsystem::MusicThreadProc( void* Audio )
+#else
+void* UNOpenALAudioSubsystem::MusicThreadProc( void* Audio )
+#endif
+{
+	UNOpenALAudioSubsystem* This = (UNOpenALAudioSubsystem*)Audio;
+
+	while( This->MusicThreadRunning )
+	{
+		This->UpdateMusicBuffers();
+		appSleep( 0.1f );
+	}
+
+	return (THREAD_RET)0;
+}

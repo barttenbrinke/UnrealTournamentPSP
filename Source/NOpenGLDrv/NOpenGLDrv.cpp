@@ -403,11 +403,6 @@ void UNOpenGLRenderDevice::StaticConstructor()
 	new(Class, "AutoFOV",             RF_Public)UBoolProperty( CPP_PROPERTY(AutoFOV),             "Options", CPF_Config );
 	new(Class, "UseWindowBrightness", RF_Public)UBoolProperty( CPP_PROPERTY(UseWindowBrightness), "Options", CPF_Config );
 	new(Class, "SwapInterval",        RF_Public)UIntProperty ( CPP_PROPERTY(SwapInterval),        "Options", CPF_Config );
-	unguardSlow;
-}
-
-UNOpenGLRenderDevice::UNOpenGLRenderDevice()
-{
 	NoFiltering = false;
 	UseHwPalette = true;
 	UseBGRA = true;
@@ -415,8 +410,16 @@ UNOpenGLRenderDevice::UNOpenGLRenderDevice()
 	UseMultiTexture = true;
 	AutoFOV = true;
 	UseWindowBrightness = true;
-	CurrentBrightness = -1.f;
 	SwapInterval = 1;
+	unguardSlow;
+}
+
+UNOpenGLRenderDevice::UNOpenGLRenderDevice()
+{
+	// Config defaults are set in StaticConstructor: v400 runs this after
+	// copying the ini-loaded class defaults, so setting them here would
+	// override the ini.
+	CurrentBrightness = -1.f;
 }
 
 UBOOL UNOpenGLRenderDevice::SetRes( INT NewX, INT NewY, INT NewColorBytes, UBOOL Fullscreen )
@@ -431,6 +434,8 @@ UBOOL UNOpenGLRenderDevice::SetRes( INT NewX, INT NewY, INT NewColorBytes, UBOOL
 UBOOL UNOpenGLRenderDevice::Init( UViewport* InViewport, INT NewX, INT NewY, INT NewColorBytes, UBOOL Fullscreen )
 {
 	guard(UNOpenGLRenderDevice::Init)
+	// A native-only class: no script package loads its config, so do it here.
+	LoadConfig();
 #ifdef __PSP__
 	{
 		INT Shiny = ShinySurfaces ? 1 : 0;
@@ -735,6 +740,7 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 					debugf( NAME_Log, TEXT("PSPPERF:   script %s"), Line );
 				}
 				if( PP->Level->Game ) debugf( NAME_Log, "PSPPERF:   game %s timer rate %.2f counter %.2f ready %i", PP->Level->Game->GetName(), PP->Level->Game->TimerRate, PP->Level->Game->TimerCounter, (INT)PP->bReadyToPlay );
+				debugf( NAME_Log, "PSPPERF:   song %s section %i transition %i levelsong %s", PP->Song ? PP->Song->GetName() : "none", (INT)PP->SongSection, (INT)PP->Transition, PP->Level->Song ? PP->Level->Song->GetName() : "none" );
 				debugf( NAME_Log, "PSPPERF:   level time %.2f dilation %.2f paused %s | player %s state %s weapon %s health %i hud %s behindview %i", PP->Level->TimeSeconds, PP->Level->TimeDilation, PP->Level->Pauser.Len() ? *PP->Level->Pauser : "-",
 					PP->GetName(), PP->GetStateFrame() && PP->GetStateFrame()->StateNode ? PP->GetStateFrame()->StateNode->GetName() : "-",
 					PP->Weapon ? PP->Weapon->GetName() : "none", PP->Health, PP->myHUD ? PP->myHUD->GetClass()->GetName() : "none", (INT)PP->bBehindView );

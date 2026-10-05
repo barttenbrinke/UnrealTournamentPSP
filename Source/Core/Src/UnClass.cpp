@@ -389,8 +389,16 @@ void UStruct::Link( FArchive& Ar, UBOOL Props )
 			if( Property )
 			{
 				INT SavedOffset = Property->Offset;
+				// Natively registered bools (CPP_PROPERTY on a UBOOL member)
+				// each own a whole int with mask 1; Link would merge them
+				// into one bitfield as if they came from script, and the ini
+				// value of every bool after the first lands in the wrong bit.
+				UBoolProperty* Bool = Cast<UBoolProperty>( Property );
+				BITFIELD SavedMask = Bool ? Bool->BitMask : 0;
 				Property->Link( Ar, Prev );
 				Property->Offset = SavedOffset;
+				if( Bool )
+					Bool->BitMask = SavedMask;
 				Prev = Property;
 			}
 		}

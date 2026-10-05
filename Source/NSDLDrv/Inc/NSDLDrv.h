@@ -114,7 +114,7 @@ class NSDLDRV_API UNSDLClient : public UClient, public FNotifyHook
 
 	// Constructors.
 	UNSDLClient();
-	static void InternalClassInitializer( UClass* Class );
+	void StaticConstructor();
 
 	// UObject interface.
 	virtual void Destroy() override;

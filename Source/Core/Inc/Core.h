@@ -354,6 +354,7 @@ extern "C" DLL_EXPORT char THIS_PACKAGE[];
 #include "UnObjVer.h"		// Object version info.
 #include "UnArc.h"			// Archive class.
 #include "UnTemplate.h"     // Dynamic arrays.
+#include "UnThread.h"       // Threads and mutexes (from the Unreal 1 SDL port).
 #include "UnName.h"			// Global name subsystem.
 #include "UnStack.h"		// Script stack definition.
 #include "UnStaticExports.h" // Package exports for static builds.

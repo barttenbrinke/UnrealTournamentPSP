@@ -70,6 +70,11 @@ class ENGINE_API URenderDevice : public USubsystem
 	virtual void Unlock( UBOOL Blit )=0;
 	virtual void DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )=0;
 	virtual void DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& Info, FTransTexture** Pts, int NumPts, DWORD PolyFlags, FSpanBuffer* Span )=0;
+	// PSP: NumTris unclipped triangles (Pts holds 3 per triangle, already in
+	// draw order; UV holds each corner's U,V since mesh vertices are shared
+	// between wedges) with one texture and flag set. Returns 0 when
+	// unsupported; the renderer then uses DrawGouraudPolygon.
+	virtual UBOOL DrawGouraudTris( FSceneNode* Frame, FTextureInfo& Info, FTransTexture** Pts, const FLOAT* UV, INT NumTris, DWORD PolyFlags ) { return 0; }
 	virtual void DrawTile( FSceneNode* Frame, FTextureInfo& Info, FLOAT X, FLOAT Y, FLOAT XL, FLOAT YL, FLOAT U, FLOAT V, FLOAT UL, FLOAT VL, class FSpanBuffer* Span, FLOAT Z, FPlane Color, FPlane Fog, DWORD PolyFlags )=0;
 	virtual void Draw3DLine( FSceneNode* Frame, FPlane Color, DWORD LineFlags, FVector OrigP, FVector OrigQ );
 	virtual void Draw2DClippedLine( FSceneNode* Frame, FPlane Color, DWORD LineFlags, FVector P1, FVector P2 );

@@ -634,6 +634,40 @@ void URender::DrawLodMesh
 		// Reset cached material indicator.
 		MatIndex = -1;
 		FTextureInfo* Info = NULL; 
+#ifdef PLATFORM_PSP
+		// Fast path: runs of triangles with all three vertices on screen
+		// (nothing to clip) and a plain material go to the driver as one list
+		// (DrawGouraudTris) instead of one RenderSubsurface + driver call
+		// each. Everything else -- clipped, near-clipped, mirrored frames,
+		// environment-mapped or unlit materials -- keeps the stock path.
+		// [PSP] MeshTris=1 (or -MESHTRIS=1) enables it; off until verified on hardware.
+		static INT PspMeshTris = -1;
+		if( PspMeshTris < 0 )
+		{
+			PspMeshTris = 0;
+			GConfig->GetInt( TEXT("PSP"), TEXT("MeshTris"), PspMeshTris );
+			Parse( appCmdLine(), TEXT("MESHTRIS="), PspMeshTris );
+		}
+		const UBOOL PspFast = PspMeshTris && ( Frame->NearClip.W == 0.0 && Frame->Mirror != -1 );
+		FTransTexture** PspRun = PspFast ? New<FTransTexture*>(GMem, 3*FacePool.Num()) : NULL;
+		FLOAT* PspRunUV = PspFast ? New<FLOAT>(GMem, 6*FacePool.Num()) : NULL;
+		INT PspRunTris = 0;
+		FTextureInfo* PspRunInfo = NULL;
+		DWORD PspRunFlags = 0;
+		#define PSP_FLUSH_RUN() \
+			if( PspRunTris ) \
+			{ \
+				STAT(clock(GStat.MeshTmapTime)); \
+				if( !Frame->Viewport->RenDev->DrawGouraudTris( Frame, *PspRunInfo, PspRun, PspRunUV, PspRunTris, PspRunFlags ) ) \
+					for( INT r=0; r<PspRunTris; r++ ) \
+					{ \
+						for( INT c=0; c<3; c++ ) { PspRun[3*r+c]->U = PspRunUV[6*r+2*c]; PspRun[3*r+c]->V = PspRunUV[6*r+2*c+1]; } \
+						Frame->Viewport->RenDev->DrawGouraudPolygon( Frame, *PspRunInfo, PspRun+3*r, 3, PspRunFlags, SpanBuffer ); \
+					} \
+				STAT(unclock(GStat.MeshTmapTime)); \
+				PspRunTris = 0; \
+			}
+#endif
 		for( i=0; i<FacePool.Num(); i++ )
 		{
 			// Set up the triangle.
@@ -668,8 +702,32 @@ void URender::DrawLodMesh
 
 			if( Frame->Mirror == -1 ) 
 					Exchange( Pts[2], Pts[0] );
+#ifdef PLATFORM_PSP
+			if( PspFast && !(MatFlags & (PF_Environment|PF_Unlit|PF_Invisible)) && !(Pts[0]->Flags | Pts[1]->Flags | Pts[2]->Flags) )
+			{
+				if( PspRunTris && ( Info != PspRunInfo || MatFlags != PspRunFlags ) )
+					PSP_FLUSH_RUN()
+				PspRunInfo  = Info;
+				PspRunFlags = MatFlags;
+				// RenderSubsurface's two-sided rule: flip a back-facing one.
+				if( (MatFlags & PF_TwoSided) && FTriple(Pts[0]->Point,Pts[1]->Point,Pts[2]->Point) <= 0.0 )
+					Exchange( Pts[2], Pts[0] );
+				// U/V live on the shared vertex and the next face may rewrite
+				// them for another wedge, so the run keeps its own copy.
+				FTransTexture** Dst = PspRun   + 3*PspRunTris;
+				FLOAT*          UVd = PspRunUV + 6*PspRunTris;
+				for( INT c=0; c<3; c++ ) { Dst[c] = Pts[c]; UVd[2*c] = Pts[c]->U; UVd[2*c+1] = Pts[c]->V; }
+				PspRunTris++;
+				continue;
+			}
+			PSP_FLUSH_RUN()
+#endif
 			RenderSubsurface( Frame, *Info, SpanBuffer, Pts, MatFlags, 0 );
 		}
+#ifdef PLATFORM_PSP
+		PSP_FLUSH_RUN()
+		#undef PSP_FLUSH_RUN
+#endif
 
 	GLightManager->FinishActor();
 	for( i=0; i<Mesh->Textures.Num(); i++ )

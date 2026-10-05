@@ -19,7 +19,16 @@ grep -q "Connected to device" $S/usbhostfs.log || { echo "$L: NO USB"; pkill usb
 sleep 20; echo "ls" > $S/pspsh.in; sleep 4
 ROOT="-ROOT=host0:/UnrealTournament/System/"
 [[ "$*" == *-ROOT=* ]] && ROOT=""
-echo "./$PRX $* $ROOT" > $S/pspsh.in; sleep $T
+echo "./$PRX $* $ROOT" > $S/pspsh.in
+# SHOTS="60 90": PSP framebuffer screenshots at those seconds into the run,
+# saved as $H/shot-<label>-<secs>.bmp.
+if [[ -n "$SHOTS" ]]; then
+  T0=0
+  for t in ${=SHOTS}; do sleep $(( t - T0 )); T0=$t; echo "scrshot host0:/shot-$L-$t.bmp" > $S/pspsh.in; done
+  sleep $(( T - T0 ))
+else
+  sleep $T
+fi
 # 'reset', never 'exit': after an exit the USB link is gone until the cable is reseated
 echo "reset" > $S/pspsh.in; sleep 20
 pkill pspsh; pkill -f pspsh_drive.py; pkill usbhostfs_pc; sleep 2

@@ -34,16 +34,24 @@ which PPSSPP does not emulate). A file `System/cmdline.txt` with a map URL, for 
 
 | Button | In game | In the menus |
 |---|---|---|
-| Analog stick | move / strafe | move the cursor |
-| Triangle / Cross | look up / down | Enter / click |
-| Square / Circle | turn left / right | right click / back |
-| R / L | fire / alt-fire | |
-| D-pad up / down | jump / duck | |
+| Analog stick | look / aim | move the cursor |
+| Triangle / Cross | move forward / back | Enter / click |
+| Square / Circle | strafe left / right | right click / back |
+| L | fire | |
+| R | alt-fire (hold to charge) | |
+| R + tap L | jump | |
+| D-pad down | crouch | |
 | D-pad left / right | previous / next weapon | |
+| R + D-pad up | use selected item | |
+| R + D-pad left / right | previous / next item | |
 | Start | menu | close |
 | Select | scores | |
 
-In deathmatch you start waiting for the match: press R (fire) to begin.
+Auto-aim is on (as on the Dreamcast): shots bend toward a target within about 20 degrees of
+the crosshair. Turn it off with `MyAutoAim=1.0` in `System/User.ini`, or invert the vertical look
+with `JoyY=Axis aLookUp speed=-0.5`. Auto-aim works offline at bot skill 2 or lower.
+
+In deathmatch you start waiting for the match: press L (fire) to begin.
 
 ## Building
 

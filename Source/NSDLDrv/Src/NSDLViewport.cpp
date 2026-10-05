@@ -912,6 +912,37 @@ UBOOL UNSDLViewport::TickInput()
 					// Note: GetMainFrame() is Unreal 1 specific, disabled for UT99
 					const UBOOL bIsInUI = PspInUWindow( (UObject*)Console );
 					const BYTE* JoyMap = bIsInUI ? JoyButtonMapUI : JoyButtonMap;
+#ifdef PLATFORM_PSP
+					// R shift layer (in game only): R itself still fires its own
+					// binding (alt-fire, held to charge), and while it is down
+					// L, D-pad up, left and right report as other keys:
+					//   R+L -> Joy12, R+Up -> Joy13, R+Left -> Joy14, R+Right -> Joy15
+					// A button released after R remembers it was shifted, so the
+					// release reaches the same key as the press.
+					if( !bIsInUI )
+					{
+						static UBOOL RHeld = 0;
+						static DWORD ShiftedDown = 0;   // bit per SDL button pressed while shifted
+						const UBOOL Down = ( Ev.type == SDL_CONTROLLERBUTTONDOWN );
+						const INT   B    = Ev.cbutton.button;
+						if( B == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER )
+							RHeld = Down;
+						BYTE Shifted = 0;
+						switch( B )
+						{
+							case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: Shifted = IK_Joy12; break;
+							case SDL_CONTROLLER_BUTTON_DPAD_UP:      Shifted = IK_Joy13; break;
+							case SDL_CONTROLLER_BUTTON_DPAD_LEFT:    Shifted = IK_Joy14; break;
+							case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:   Shifted = IK_Joy15; break;
+						}
+						if( Shifted && ( Down ? RHeld : ( ShiftedDown & (1u<<B) ) ) )
+						{
+							if( Down ) ShiftedDown |= (1u<<B); else ShiftedDown &= ~(1u<<B);
+							CauseInputEvent( Shifted, Down ? IST_Press : IST_Release );
+							break;
+						}
+					}
+#endif
 					CauseInputEvent( JoyMap[Ev.cbutton.button], ( Ev.type == SDL_CONTROLLERBUTTONDOWN ) ? IST_Press : IST_Release );
 				}
 				break;

@@ -96,6 +96,7 @@ class DLL_EXPORT UNOpenGLRenderDevice : public URenderDevice
 	virtual void Unlock( UBOOL Blit ) override;
 	virtual void DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet ) override;
 	virtual void DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& Texture, FTransTexture** Pts, INT NumPts, DWORD PolyFlags, FSpanBuffer* SpanBuffer ) override;
+	virtual UBOOL DrawGouraudTris( FSceneNode* Frame, FTextureInfo& Texture, FTransTexture** Pts, const FLOAT* UV, INT NumTris, DWORD PolyFlags ) override;
 	virtual void DrawTile( FSceneNode* Frame, FTextureInfo& Texture, FLOAT X, FLOAT Y, FLOAT XL, FLOAT YL, FLOAT U, FLOAT V, FLOAT UL, FLOAT VL, FSpanBuffer* Span, FLOAT Z, FPlane Light, FPlane Fog, DWORD PolyFlags ) override;
 	virtual void EndFlash() override;
 	virtual void GetStats( TCHAR* Result ) override;

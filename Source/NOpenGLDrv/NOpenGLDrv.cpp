@@ -10,6 +10,7 @@
 #endif
 
 #include "NOpenGLDrvPrivate.h"
+#include "UnPsp.h"
 
 // UT v400 compatibility for code written against Unreal v200.
 #define uclock(Timer)   clock(Timer)
@@ -374,6 +375,12 @@ IMPLEMENT_CLASS(UNOpenGLRenderDevice);
 // (Render/Src/UnLight.cpp:1924 sets TF_RealtimeChanged on the lightmap).
 // Skipping uploads only added judder. Attack the CPU side instead.
 static DWORD GPspFrameCount = 0;
+#ifdef PSP_KEEP_UCLOCK
+// Profiling build: the renderer's and engine's own timers, summed per report
+// interval (microseconds; appCycles ticks in us on the PSP).
+static SQWORD GPspProf[16];
+enum { PP_Occl, PP_Clip, PP_Raster, PP_Span, PP_Box, PP_PolyV, PP_Mesh, PP_MeshFrame, PP_MeshProc, PP_MeshLight, PP_MeshSub, PP_MeshClip, PP_MeshTmap, PP_Illum, PP_Tick, PP_Game };
+#endif
 static DWORD GPspUploadCount = 0;
 static DWORD GPspUploadLast  = 0;
 // Signed: the per-frame counters are 32-bit INT and can come back negative if
@@ -748,6 +755,19 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 					PP->GetName(), PP->GetStateFrame() && PP->GetStateFrame()->StateNode ? PP->GetStateFrame()->StateNode->GetName() : "-",
 					PP->Weapon ? PP->Weapon->GetName() : "none", PP->Health, PP->myHUD ? PP->myHUD->GetClass()->GetName() : "none", (INT)PP->bBehindView );
 			}
+#ifdef PSP_KEEP_UCLOCK
+			{
+				#define PPMS(i) (FLOAT)( GPspProf[i] / 100.0 / 1000.0 )
+				debugf( NAME_Log, "PSPPROF: ms/frame: game %.1f (tick %.1f) | occl %.1f (clip %.1f raster %.1f span %.1f box %.1f) | surfs %.1f | mesh %.1f (frame %.1f proc %.1f light %.1f sub %.1f clip %.1f tmap %.1f) | illum %.1f",
+					PPMS(PP_Game), PPMS(PP_Tick), PPMS(PP_Occl), PPMS(PP_Clip), PPMS(PP_Raster), PPMS(PP_Span), PPMS(PP_Box), PPMS(PP_PolyV),
+					PPMS(PP_Mesh), PPMS(PP_MeshFrame), PPMS(PP_MeshProc), PPMS(PP_MeshLight), PPMS(PP_MeshSub), PPMS(PP_MeshClip), PPMS(PP_MeshTmap), PPMS(PP_Illum) );
+				debugf( NAME_Log, "PSPPROF: phases ms/frame: world %.1f hud %.1f console %.1f unlock/swap %.1f audio %.1f",
+					GPspPhase[PSPPH_World]/100000.f, GPspPhase[PSPPH_Hud]/100000.f, GPspPhase[PSPPH_Console]/100000.f, GPspPhase[PSPPH_Unlock]/100000.f, GPspPhase[PSPPH_Audio]/100000.f );
+				appMemzero( GPspPhase, sizeof(GPspPhase) );
+				#undef PPMS
+				appMemzero( GPspProf, sizeof(GPspProf) );
+			}
+#endif
 			GPspUpFirst = GPspUpRealtime = GPspUpBig = GPspUpBytes = 0;
 			GPspBatchPolys = GPspBatchDraws = GPspFacetDraws = GPspRingWraps = GPspDrawCalls = GPspDrawVerts = 0;
 			GPspFinishWaitUs = 0;
@@ -805,6 +825,18 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 
 void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 {
+#ifdef PSP_KEEP_UCLOCK
+	GPspProf[PP_Occl] += GStat.OcclusionTime; GPspProf[PP_Clip] += GStat.ClipTime; GPspProf[PP_Raster] += GStat.RasterTime;
+	GPspProf[PP_Span] += GStat.SpanTime; GPspProf[PP_Box] += GStat.BoxTime; GPspProf[PP_PolyV] += GStat.PolyVTime;
+	GPspProf[PP_Mesh] += GStat.MeshTime; GPspProf[PP_MeshFrame] += GStat.MeshGetFrameTime; GPspProf[PP_MeshProc] += GStat.MeshProcessTime;
+	GPspProf[PP_MeshLight] += GStat.MeshLightTime + GStat.MeshLightSetupTime; GPspProf[PP_MeshSub] += GStat.MeshSubTime;
+	GPspProf[PP_MeshClip] += GStat.MeshClipTime; GPspProf[PP_MeshTmap] += GStat.MeshTmapTime; GPspProf[PP_Illum] += GStat.IllumTime;
+	if( Viewport && Viewport->GetOuterUClient() && Viewport->GetOuterUClient()->Engine )
+	{
+		UEngine* E = Viewport->GetOuterUClient()->Engine;
+		GPspProf[PP_Tick] += E->TickCycles; GPspProf[PP_Game] += E->GameCycles;
+	}
+#endif
 #ifdef __PSP__
 	PspFlushBatch();
 #endif
@@ -1742,6 +1774,69 @@ static inline BYTE PspToByte( FLOAT V )
 	return (BYTE)Clamp( I, 0, 255 );
 }
 #endif
+
+UBOOL UNOpenGLRenderDevice::DrawGouraudTris( FSceneNode* Frame, FTextureInfo& Texture, FTransTexture** Pts, const FLOAT* UV, INT NumTris, DWORD PolyFlags )
+{
+#ifdef __PSP__
+	// A run of mesh triangles in one go: one state check, then the vertices
+	// go straight into the batch (no per-triangle fan copy or call).
+	if( ( (PolyFlags & (PF_RenderFog|PF_Translucent|PF_Modulated)) == PF_RenderFog ) || NumTris <= 0 )
+		return 0;
+	guard(UNOpenGLRenderDevice::DrawGouraudTris);
+	const UBOOL Modulated = ( PolyFlags & PF_Modulated );
+	if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Texture.bRealtimeChanged || GPspBatchTile ) )
+		PspFlushBatch();
+	if( !GPspBatchOpen )
+	{
+		SetSceneNode( Frame );
+		SetBlend( PolyFlags );
+		SetTexture( 0, Texture, ( PolyFlags & PF_Masked ), 0 );
+		ResetTexture( 1 );
+		ResetTexture( 2 );
+		ResetTexture( 3 );
+		GPspBatchOpen  = 1;
+		GPspBatchTex   = Texture.CacheID;
+		GPspBatchFlags = PolyFlags;
+		GPspBatchFrame = Frame;
+	}
+	const FLOAT UM = TexInfo[0].UMult, VM = TexInfo[0].VMult;
+	while( NumTris > 0 )
+	{
+		const INT Chunk = Min( NumTris, (INT)( PSP_BATCH_MAX_VERTS / 3 ) );
+		BYTE* Out = PspBatchReserve( 3 * Chunk );
+		if( !Out )
+			return 0;
+		for( INT i = 0; i < 3 * Chunk; ++i )
+		{
+			const FTransTexture* P = Pts[i];
+			FLOAT* T = (FLOAT*)Out;
+			T[0] = UV[2*i]   * UM;
+			T[1] = UV[2*i+1] * VM;
+			BYTE* C = Out + 8;
+			if( Modulated )
+				C[0] = C[1] = C[2] = 255;
+			else
+			{
+				C[0] = PspToByte( P->Light.X );
+				C[1] = PspToByte( P->Light.Y );
+				C[2] = PspToByte( P->Light.Z );
+			}
+			C[3] = 255;
+			FLOAT* P3 = (FLOAT*)( Out + 12 );
+			P3[0] = P->Point.X; P3[1] = P->Point.Y; P3[2] = P->Point.Z;
+			Out += 24;
+		}
+		GPspBatchPolys += Chunk;
+		Pts     += 3 * Chunk;
+		UV      += 6 * Chunk;
+		NumTris -= Chunk;
+	}
+	return 1;
+	unguard;
+#else
+	return 0;
+#endif
+}
 
 void UNOpenGLRenderDevice::DrawGouraudPolygon( FSceneNode* Frame, FTextureInfo& Texture, FTransTexture** Pts, INT NumPts, DWORD PolyFlags, FSpanBuffer* SpanBuffer )
 {

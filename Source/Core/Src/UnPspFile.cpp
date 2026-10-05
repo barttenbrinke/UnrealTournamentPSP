@@ -34,6 +34,7 @@ struct FPspFile
 	char	Path[PSP_PATH_MAX];
 };
 
+CORE_API INT GPspPhase[PSPPH_Max];
 static FPspFile GPspFiles[PSP_MAX_FILES];
 static DWORD GPspUseClock = 0;
 

@@ -7,6 +7,17 @@
 =============================================================================*/
 
 #include "EnginePrivate.h"
+#ifdef PLATFORM_PSP
+#include "UnPsp.h"
+#endif
+// Frame phase timers for the PSP profiling build (see UnPsp.h).
+#if defined(PLATFORM_PSP) && defined(PSP_KEEP_UCLOCK)
+#define PSPPH_BEGIN(p) GPspPhase[p] -= (INT)appCycles();
+#define PSPPH_END(p)   GPspPhase[p] += (INT)appCycles();
+#else
+#define PSPPH_BEGIN(p)
+#define PSPPH_END(p)
+#endif
 #include "UnRender.h"
 #include "UnNet.h"
 
@@ -1226,7 +1237,9 @@ void UGameEngine::Draw( UViewport* Viewport, UBOOL Blit, BYTE* HitData, INT* Hit
 		if( Audio )
 		{
 			clock(GLevel->AudioTickCycles);
+			PSPPH_BEGIN(PSPPH_Audio)
 			Audio->Update( ViewActor->Region, Frame->Coords );
+			PSPPH_END(PSPPH_Audio)
 			unclock(GLevel->AudioTickCycles);
 		}
 
@@ -1245,19 +1258,25 @@ void UGameEngine::Draw( UViewport* Viewport, UBOOL Blit, BYTE* HitData, INT* Hit
 		Frame->Y = Viewport->Canvas->ClipY;
 		Frame->ComputeRenderSize();
 #endif
+		PSPPH_BEGIN(PSPPH_World)
 		if( Frame->X>0 && Frame->Y>0 && (!Viewport->Console || Viewport->Console->GetDrawWorld()) )
 			Render->DrawWorld( Frame );
+		PSPPH_END(PSPPH_World)
 #if defined(LEGEND) //MWP
 		Frame->XB = SaveXB, Frame->YB = SaveYB, Frame->X = SaveX, Frame->Y = SaveY;
 		Frame->ComputeRenderSize();
 #endif
 		Viewport->RenDev->EndFlash();
+		PSPPH_BEGIN(PSPPH_Hud)
 		Viewport->Actor->eventPostRender( Viewport->Canvas );
+		PSPPH_END(PSPPH_Hud)
+		PSPPH_BEGIN(PSPPH_Console)
 		if( Viewport->Console )
 		{
 			Viewport->Console->PostRender( Frame );
 			Viewport->Console->eventPostRender( Viewport->Canvas );
 		}
+		PSPPH_END(PSPPH_Console)
 		if( Audio )
 			Audio->PostRender( Frame );
 
@@ -1295,7 +1314,9 @@ void UGameEngine::Draw( UViewport* Viewport, UBOOL Blit, BYTE* HitData, INT* Hit
 
 		Viewport->Canvas->Render = 0;
 		Render->PostRender( Frame );
+		PSPPH_BEGIN(PSPPH_Unlock)
 		Viewport->Unlock( Blit );
+		PSPPH_END(PSPPH_Unlock)
 		Render->FinishMasterFrame();
 	}
 	ViewActor->Level->LevelAction = SavedAction;

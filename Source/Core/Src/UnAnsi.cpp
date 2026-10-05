@@ -90,6 +90,7 @@ CORE_API FString appGetGMTRef()
 	Math functions.
 -----------------------------------------------------------------------------*/
 
+#ifndef PLATFORM_PSP	// inline single-precision versions in UnFile.h
 CORE_API DOUBLE appExp( DOUBLE Value )
 {
 	return exp(Value);
@@ -130,6 +131,7 @@ CORE_API DOUBLE appPow( DOUBLE A, DOUBLE B )
 {
 	return pow(A,B);
 }
+#endif
 CORE_API UBOOL appIsNan( DOUBLE A )
 {
 #if _MSC_VER
@@ -193,10 +195,12 @@ CORE_API void* appMemmove( void* Dest, const void* Src, INT Count )
 	return memmove( Dest, Src, Count );
 }
 
+#ifndef PLATFORM_PSP	// inline in UnFile.h
 CORE_API void appMemset( void* Dest, INT C, INT Count )
 {
 	memset( Dest, C, Count );
 }
+#endif
 #endif
 #ifndef DEFINED_appMemzero
 CORE_API void appMemzero( void* Dest, INT Count )
@@ -205,7 +209,7 @@ CORE_API void appMemzero( void* Dest, INT Count )
 }
 #endif
 
-#ifndef DEFINED_appMemcpy
+#if !defined(DEFINED_appMemcpy) && !defined(PLATFORM_PSP)
 CORE_API void appMemcpy( void* Dest, const void* Src, INT Count )
 {
 	memcpy( Dest, Src, Count );

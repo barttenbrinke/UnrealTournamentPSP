@@ -9,7 +9,8 @@ S="${PSP_WORK:-$HOME/.ut-psp}"; mkdir -p "$S"
 H="${PSP_HOST:-$S/psplink_host}"
 L=$1; T=$2; shift 2
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
-cp "$HERE/build-psplink/UnrealTournament/UnrealTournament.prx" "$H/" 2>/dev/null
+PRX="${PRX:-UnrealTournament.prx}"   # PRX=other.prx (already in $H) for A/B runs
+[[ "$PRX" == UnrealTournament.prx ]] && cp "$HERE/build-psplink/UnrealTournament/UnrealTournament.prx" "$H/" 2>/dev/null
 pkill usbhostfs_pc; pkill -f pspsh_drive.py; pkill pspsh; sleep 1; rm -f $S/pspsh.in $S/pspsh.log
 (cd $S && usbhostfs_pc $H > $S/usbhostfs.log 2>&1 &)
 for i in $(seq 1 600); do grep -q "Connected to device" $S/usbhostfs.log && break; sleep 1; done
@@ -18,7 +19,7 @@ grep -q "Connected to device" $S/usbhostfs.log || { echo "$L: NO USB"; pkill usb
 sleep 20; echo "ls" > $S/pspsh.in; sleep 4
 ROOT="-ROOT=host0:/UnrealTournament/System/"
 [[ "$*" == *-ROOT=* ]] && ROOT=""
-echo "./UnrealTournament.prx $* $ROOT" > $S/pspsh.in; sleep $T
+echo "./$PRX $* $ROOT" > $S/pspsh.in; sleep $T
 # 'reset', never 'exit': after an exit the USB link is gone until the cable is reseated
 echo "reset" > $S/pspsh.in; sleep 20
 pkill pspsh; pkill -f pspsh_drive.py; pkill usbhostfs_pc; sleep 2
@@ -26,3 +27,5 @@ cp $S/pspsh.log $S/hw-$L.log
 echo "== $L ($*): $(grep -a -c 'frames in' $S/hw-$L.log) intervals, exceptions: $(grep -a -c -i 'exception' $S/hw-$L.log)"
 grep -a -E "Critical|PSPDEATH|Exception|Startup time" $S/hw-$L.log | head -8
 grep -a -E "PSPPERF: 100 frames" $S/hw-$L.log | sed 's/.*PSPPERF: //' | cut -c1-110 | tail -12
+# Mean and worst over the intervals after the first 3 (load and spawn settle).
+grep -a -E "PSPPERF: 100 frames" $S/hw-$L.log | sed 's/.*= \([0-9.]*\) fps.*/\1/' | tail -n +4 | awk '{s+=$1; n++; if(min==""||$1<min)min=$1} END {if(n) printf "== %s: mean %.1f fps, worst %.1f over %d intervals\n", "'$L'", s/n, min, n}'

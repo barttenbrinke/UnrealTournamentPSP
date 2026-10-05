@@ -163,8 +163,21 @@ CORE_API void VARARGS appThrowf( const TCHAR* Fmt, ... );
 //
 // Normal timing.
 //
+#if defined(PLATFORM_PSP) && !defined(PSP_KEEP_UCLOCK)
+// appCycles() is SDL_GetPerformanceCounter() here, a kernel time call, and the
+// engine has clock/unclock pairs inside per-surface and per-polygon loops: the
+// instrumentation itself was 8-11% of the frame in the Unreal PSP port.
+// Build with -DPSP_KEEP_UCLOCK to get the stat counters back.
+#define clock(Timer)
+#define unclock(Timer)
+#elif defined(PLATFORM_PSP)
+// No 34-cycle correction: the counter ticks in microseconds on the PSP.
+#define clock(Timer)   {Timer -= appCycles();}
+#define unclock(Timer) {Timer += appCycles();}
+#else
 #define clock(Timer)   {Timer -= appCycles();}
 #define unclock(Timer) {Timer += appCycles()-34;}
+#endif
 
 //
 // Performance critical timing.
@@ -360,6 +373,24 @@ CORE_API UBOOL ParseParam( const TCHAR* Stream, const TCHAR* Param );
 	Math functions.
 -----------------------------------------------------------------------------*/
 
+#ifdef PLATFORM_PSP
+// The Allegrex FPU is single precision only; every DOUBLE is a libgcc software
+// call. With the DOUBLE interface each appSqrt() cost two conversions plus a
+// soft-float call, and 1.0/appSqrt(x) a software double division per vertex
+// normal. Inline single-precision versions instead (-fno-math-errno lets
+// __builtin_sqrtf become the sqrt.s instruction).
+#include <math.h>
+inline FLOAT appExp( FLOAT Value )           { return expf(Value); }
+inline FLOAT appLoge( FLOAT Value )          { return logf(Value); }
+inline FLOAT appFmod( FLOAT A, FLOAT B )     { return fmodf(A,B); }
+inline FLOAT appSin( FLOAT Value )           { return sinf(Value); }
+inline FLOAT appCos( FLOAT Value )           { return cosf(Value); }
+inline FLOAT appTan( FLOAT Value )           { return tanf(Value); }
+inline FLOAT appAtan( FLOAT Value )          { return atanf(Value); }
+inline FLOAT appAtan2( FLOAT Y, FLOAT X )    { return atan2f(Y,X); }
+inline FLOAT appSqrt( FLOAT Value )          { return __builtin_sqrtf(Value); }
+inline FLOAT appPow( FLOAT A, FLOAT B )      { return powf(A,B); }
+#else
 CORE_API DOUBLE appExp( DOUBLE Value );
 CORE_API DOUBLE appLoge( DOUBLE Value );
 CORE_API DOUBLE appFmod( DOUBLE A, DOUBLE B );
@@ -370,6 +401,7 @@ CORE_API DOUBLE appAtan( DOUBLE Value );
 CORE_API DOUBLE appAtan2( DOUBLE Y, DOUBLE X );
 CORE_API DOUBLE appSqrt( DOUBLE Value );
 CORE_API DOUBLE appPow( DOUBLE A, DOUBLE B );
+#endif
 CORE_API UBOOL appIsNan( DOUBLE Value );
 CORE_API INT appRand();
 CORE_API FLOAT appFrand();
@@ -409,6 +441,13 @@ CORE_API void appMemzero( void* Dest, INT Count );
 #define appMemmove memmove
 #define appMemset memset
 #define appMemcpy memcpy
+#elif defined(PLATFORM_PSP)
+// Inline over the compiler builtins: the script VM reads every operand through
+// appMemcpy (the unaligned-safe form), and out of line that was 4% of the
+// frame in the Unreal port's hardware profile. A constant-size copy becomes
+// plain loads.
+CORE_API void* appMemmove( void* Dest, const void* Src, INT Count );
+inline void appMemset( void* Dest, INT C, INT Count )          { __builtin_memset( Dest, C, Count ); }
 #else
 CORE_API void* appMemmove( void* Dest, const void* Src, INT Count );
 CORE_API void appMemset( void* Dest, INT C, INT Count );

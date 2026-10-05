@@ -3972,6 +3972,20 @@ void UFractalTexture::Init( INT  InUSize, INT  InVSize )
 void UFractalTexture::PostLoad()
 {
 	Super::PostLoad();
+#ifdef PLATFORM_PSP
+	{
+		static UBOOL Logged = 0;
+		if( !Logged )
+		{
+			Logged = 1;
+			UClass* C[] = { UTexture::StaticClass(), UFractalTexture::StaticClass(), UFireTexture::StaticClass(), UWaterTexture::StaticClass(), UWaveTexture::StaticClass(), UWetTexture::StaticClass(), UIceTexture::StaticClass() };
+			INT Sz[] = { (INT)sizeof(UTexture), (INT)sizeof(UFractalTexture), (INT)sizeof(UFireTexture), (INT)sizeof(UWaterTexture), (INT)sizeof(UWaveTexture), (INT)sizeof(UWetTexture), (INT)sizeof(UIceTexture) };
+			for( INT i=0; i<7; i++ )
+				debugf( NAME_Log, TEXT("PSPLAYOUT: %s C++ %i script %i"), C[i]->GetName(), Sz[i], C[i]->GetPropertiesSize() );
+			debugf( NAME_Log, TEXT("PSPLAYOUT: this %s (%s) script %i"), GetName(), GetClass()->GetName(), GetClass()->GetPropertiesSize() );
+		}
+	}
+#endif
 
 	UMask = USize - 1;
 	VMask = VSize - 1;

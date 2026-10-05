@@ -6,6 +6,10 @@
 		* Created by Jack Porter
 =============================================================================*/
 
+// UnrealScript lays native class mirrors out with 4-byte alignment (x86);
+// MIPS and ARM align 8-byte members to 8. Match the script layout.
+#pragma pack (push,4)
+
 class ENGINE_API  UScriptedTexture : public UTexture
 {
 	DECLARE_CLASS(UScriptedTexture,UTexture,0)
@@ -47,3 +51,5 @@ private:
 /*-----------------------------------------------------------------------------
 	The End.
 -----------------------------------------------------------------------------*/
+
+#pragma pack (pop)

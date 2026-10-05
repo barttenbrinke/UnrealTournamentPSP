@@ -22,8 +22,13 @@ Revision history:
 extern "C" {TCHAR THIS_PACKAGE[64]=TEXT("Launch");}
 
 // Memory allocator.
+#ifdef PSP_HEAPCHECK
+#include "FMallocPspCheck.h"
+FMallocPspCheck Malloc;
+#else
 #include "FMallocAnsi.h"
 FMallocAnsi Malloc;
+#endif
 
 // Log file.
 #include "FOutputDeviceFile.h"
@@ -106,6 +111,8 @@ static void PspPreInit( const char* Launcher )
 	std::set_new_handler( PspOnBadAlloc );
 	// Homebrew starts at 222MHz unless asked.
 	scePowerSetClockFrequency( 333, 333, 166 );
+	// Console builds skip the argv[0] module name: name the log and ini.
+	appStrcpy( GModule, "UnrealTournament" );
 	PspRootFromLauncher( Launcher );
 	if( chdir( GPspRoot ) < 0 )
 		printf( "Could not chdir to %s\n", GPspRoot );
@@ -420,6 +427,26 @@ int main( int argc, char* argv[] )
 			appStrcat( CmdLine, " " );
 		appStrcat( CmdLine, argv[i] );
 	}
+#ifdef PLATFORM_PSP
+	// No command line from the XMB or PPSSPP: System/cmdline.txt, if present,
+	// supplies one (a map URL and switches, e.g. "DM-Deck16][ -NOSOUND").
+	if( FILE* F = fopen( "cmdline.txt", "r" ) )
+	{
+		char Extra[512] = "";
+		if( fgets( Extra, sizeof(Extra), F ) )
+		{
+			for( char* c = Extra; *c; ++c )
+				if( *c == '\r' || *c == '\n' ) *c = 0;
+			if( Extra[0] && appStrlen(CmdLine) + appStrlen(Extra) + 2 < ARRAY_COUNT(CmdLine) )
+			{
+				if( CmdLine[0] )
+					appStrcat( CmdLine, " " );
+				appStrcat( CmdLine, Extra );
+			}
+		}
+		fclose( F );
+	}
+#endif
 #if !defined(PLATFORM_DREAMCAST) && !defined(PLATFORM_PSP)
 	// Take care of .ini swapping.
 	TCHAR userconfig[PATH_MAX] = TEXT("");
@@ -445,6 +472,12 @@ int main( int argc, char* argv[] )
 	GIsClient = 1; 
 	GIsGuarded = 0;
 	appInit( TEXT("UnrealTournament"), CmdLine, &Malloc, &Log, &Error, &Warn, &FileManager, FConfigCacheIni::Factory, 1 );
+#ifdef PLATFORM_PSP
+	{
+		extern CORE_API void appPspRecordNativeSizes();
+		appPspRecordNativeSizes();
+	}
+#endif
 
 	// Init mode.
 	GIsServer		= 1;

@@ -5,6 +5,10 @@
 	Contains routines for: Messages, menus, status bar
 =============================================================================*/
 
+// UnrealScript lays native class mirrors out with 4-byte alignment (x86);
+// MIPS and ARM align 8-byte members to 8. Match the script layout.
+#pragma pack (push,4)
+
 /*------------------------------------------------------------------------------
 	UConsole definition.
 ------------------------------------------------------------------------------*/
@@ -176,3 +180,4 @@ private:
 	The End.
 ------------------------------------------------------------------------------*/
 
+#pragma pack (pop)

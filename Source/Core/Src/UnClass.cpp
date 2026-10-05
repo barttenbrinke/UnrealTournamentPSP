@@ -327,6 +327,20 @@ void UStruct::Register()
 //
 // Link offsets.
 //
+#ifdef PLATFORM_PSP
+// sizeof() of every native class, captured before any package is loaded
+// (loading a class overwrites PropertiesSize with the script layout's).
+static TMap<UStruct*,INT>* GPspNativeSizes = NULL;   // created after appInit: a static TMap allocates before GMalloc exists
+CORE_API void appPspRecordNativeSizes()
+{
+	INT Count = 0;
+	GPspNativeSizes = new TMap<UStruct*,INT>;
+	for( TObjectIterator<UClass> It; It; ++It, ++Count )
+		GPspNativeSizes->Set( *It, It->GetPropertiesSize() );
+	debugf( NAME_Init, TEXT("PSPLAYOUT: recorded %i native class sizes"), Count );
+}
+#endif
+
 void UStruct::Link( FArchive& Ar, UBOOL Props )
 {
 	guard(UStruct::Link);
@@ -356,6 +370,15 @@ void UStruct::Link( FArchive& Ar, UBOOL Props )
 			}
 		}
 		PropertiesSize = Align(PropertiesSize,4);
+#ifdef PLATFORM_PSP
+		// Objects are allocated at the script size and then constructed in
+		// C++; a C++ class bigger than its script mirror overruns the heap.
+		{
+			INT* NativeSize = GPspNativeSizes ? GPspNativeSizes->Find( this ) : NULL;
+			if( NativeSize && *NativeSize > PropertiesSize )
+				debugf( NAME_Warning, TEXT("PSPLAYOUT: native class %s is %i bytes in C++ but %i in script"), GetName(), *NativeSize, PropertiesSize );
+		}
+#endif
 	}
 	else
 	{

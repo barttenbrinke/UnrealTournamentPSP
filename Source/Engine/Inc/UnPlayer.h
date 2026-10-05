@@ -6,6 +6,10 @@
 		* Created by Tim Sweeney
 =============================================================================*/
 
+// UnrealScript lays native class mirrors out with 4-byte alignment (x86);
+// MIPS and ARM align 8-byte members to 8. Match the script layout.
+#pragma pack (push,4)
+
 /*-----------------------------------------------------------------------------
 	UPlayer.
 -----------------------------------------------------------------------------*/
@@ -46,3 +50,5 @@ class ENGINE_API UPlayer : public UObject, public FOutputDevice, public FExec
 /*-----------------------------------------------------------------------------
 	The End.
 -----------------------------------------------------------------------------*/
+
+#pragma pack (pop)

@@ -620,7 +620,18 @@ CORE_API const char* appBaseDir()
 	if( !BaseDir[0] )
 	{
 		// Get directory this executable was launched from.
-#if defined(PLATFORM_SDL)
+#if defined(PLATFORM_PSP)
+		// The launcher has already chdir'd into System/ beside the EBOOT;
+		// SDL_GetBasePath would name the EBOOT's folder instead.
+		if( getcwd( BaseDir, sizeof(BaseDir) - 1 ) )
+		{
+			INT L = strlen( BaseDir );
+			if( L && BaseDir[L-1] != '/' )
+				BaseDir[L] = '/', BaseDir[L+1] = 0;
+		}
+		else
+			BaseDir[0] = 0;
+#elif defined(PLATFORM_SDL)
 		char* BasePath = SDL_GetBasePath();
 		appStrncpy( BaseDir, BasePath, sizeof(BaseDir) );
 		SDL_free( BasePath );

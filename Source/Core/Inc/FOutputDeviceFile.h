@@ -79,6 +79,14 @@ public:
 					WriteRaw( Data );
 					WriteRaw( LINE_TERMINATOR );
 #endif
+#ifdef PLATFORM_PSP
+					// A PSP crash leaves nothing behind: get every line onto
+					// the stick (and to PSPLink's stdout) as it is written.
+					LogAr->Flush();
+#ifdef PSP_PSPLINK
+					printf( "%s: %s\n", FName::SafeString(Event), Data );
+#endif
+#endif
 				}
 				if( GLogHook )
 					GLogHook->Serialize( Data, Event );

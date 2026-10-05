@@ -3,6 +3,10 @@
 	Copyright 1997-1999 Epic Games, Inc. All Rights Reserved.
 =============================================================================*/
 
+// UnrealScript lays native class mirrors out with 4-byte alignment (x86);
+// MIPS and ARM align 8-byte members to 8. Match the script layout.
+#pragma pack (push,4)
+
 /*-----------------------------------------------------------------------------
 	UPackage.
 -----------------------------------------------------------------------------*/
@@ -150,3 +154,5 @@ class CORE_API USystem : public USubsystem
 /*----------------------------------------------------------------------------
 	The End.
 ----------------------------------------------------------------------------*/
+
+#pragma pack (pop)

@@ -24,6 +24,10 @@ option(BUILD_NULLSOUNDDRV "Build SoundDrv (Null driver)" ON)
 option(BUILD_AICADRV "Build AICADrv (Dreamcast AICA sound driver)" OFF)
 option(BUILD_DCUTIL "Build DCUtil" ON)
 option(BUILD_STATIC "Link everything into a single binary" OFF)
+# The Unreal PSP port never got a working native IpDrv (its socket calls
+# reboot the console without network init); IpDrv.u loads as a plain script
+# package instead. Same default here.
+option(BUILD_IPDRV "Build the native IpDrv package" ON)
 
 
 option(DREAMCAST_USE_FATFS "Try to load data from SD or IDE" OFF)
@@ -38,6 +42,7 @@ set(DREAMCAST_IP_TXT "${CMAKE_SOURCE_DIR}/ip.txt" CACHE FILEPATH "Path to ip.txt
 set(DREAMCAST_ELF_FILE "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/UnrealTournament.elf" CACHE FILEPATH "Path to Unreal ELF used for mkdcdisc")
 
 if(PSP)
+  set(BUILD_IPDRV OFF CACHE BOOL "" FORCE)
   # One static binary, fixed-function GL through pspgl, our own audio driver.
   set(BUILD_STATIC ON)
   set(LOW_MEMORY ON)
@@ -251,9 +256,16 @@ else()
     # float math into soft-float double calls in the hottest loops.
     add_compile_options(-fsingle-precision-constant -fno-math-errno)
     add_compile_options(-mno-check-zero-division)
+    # C++14 sized delete would bypass UE's global operator delete overrides
+    # (UnFile.h) and hand appMalloc memory straight to free().
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-sized-deallocation>)
     # Keep RA honest for PSPLink crash dumps and psp-addr2line.
     add_compile_options(-g -fno-optimize-sibling-calls)
     add_compile_options(-Wno-narrowing -Wno-register -fpermissive)
+    option(PSP_HEAPCHECK "Canary-checking allocator to find heap overruns" OFF)
+    if(PSP_HEAPCHECK)
+      add_definitions(-DPSP_HEAPCHECK=1)
+    endif()
     option(PSPLINK "Mirror the log to stdout for PSPLink/pspsh" OFF)
     if(PSPLINK)
       add_definitions(-DPSP_PSPLINK=1)
@@ -285,7 +297,10 @@ endif()
 
 # Subprojects
 
-set(INSTALL_TARGETS Core Engine Render IpDrv Fire)
+set(INSTALL_TARGETS Core Engine Render Fire)
+if(BUILD_IPDRV)
+  list(APPEND INSTALL_TARGETS IpDrv)
+endif()
 
 set(CMAKE_SHARED_LIBRARY_PREFIX "")
 
@@ -293,7 +308,9 @@ add_subdirectory(Core)
 #add_subdirectory(Audio)
 add_subdirectory(Engine)
 add_subdirectory(Render)
-add_subdirectory(IpDrv)
+if(BUILD_IPDRV)
+  add_subdirectory(IpDrv)
+endif()
 add_subdirectory(Fire)
 #add_subdirectory(UCC)
 

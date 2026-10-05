@@ -68,10 +68,15 @@ if(PSP)
   # runs on the Media Engine): NOpenALDrv wraps the allocator entry points.
   target_link_options(${PROJECT_NAME} PRIVATE -Wl,--wrap=malloc,--wrap=free,--wrap=realloc,--wrap=calloc)
   # MEMSIZE=1 in PARAM.SFO claims the PSP-2000's extra 32MB.
+  # XMB icon (144x80) and background (480x272): the intro's own logo
+  # (Logo.UTLogo1-3, exported with -EXECAT=..:dumptex_Logo.UTLogo1), alpha
+  # from brightness, on a dark bronze gradient for the background.
   create_pbp_file(
     TARGET ${PROJECT_NAME}
     TITLE "Unreal Tournament"
     VERSION 01.00
+    ICON_PATH       ${CMAKE_CURRENT_SOURCE_DIR}/Res/psp/ICON0.PNG
+    BACKGROUND_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Res/psp/PIC1.PNG
   )
 endif()
 

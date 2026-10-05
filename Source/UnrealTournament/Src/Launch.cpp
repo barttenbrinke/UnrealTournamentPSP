@@ -350,6 +350,32 @@ static void MainLoop( UEngine* Engine )
 						Engine->InputEvent( V, Key, IST_Press );
 						Engine->InputEvent( V, Key, IST_Release );
 					}
+					// "dumptex <Package.Texture>": write its top mip (palettised)
+					// as System/<Texture>.ppm -- for making the XMB icon.
+					else if( ParseCommand( &Cmd, TEXT("DUMPTEX") ) )
+					{
+						UTexture* T = LoadObject<UTexture>( NULL, Cmd, NULL, LOAD_NoWarn, NULL );
+						if( T && T->Mips.Num() && T->Palette )
+						{
+							FMipmap& M = T->Mips(0);
+							M.DataArray.Load();
+							FColor* Pal = T->Palette->Colors.GetData();
+							TCHAR Name[256]; appSprintf( Name, TEXT("%s.ppm"), T->GetName() );
+							if( FILE* F = fopen( Name, "wb" ) )
+							{
+								fprintf( F, "P6\n%d %d\n255\n", M.USize, M.VSize );
+								for( INT i = 0; i < M.USize * M.VSize; i++ )
+								{
+									FColor C = Pal[ M.DataArray(i) ];
+									fputc( C.R, F ); fputc( C.G, F ); fputc( C.B, F );
+								}
+								fclose( F );
+								debugf( NAME_Log, TEXT("PSPEXEC: dumped %s %ix%i to %s"), T->GetPathName(), M.USize, M.VSize, Name );
+							}
+						}
+						else
+							debugf( NAME_Log, TEXT("PSPEXEC: no palettised texture %s"), Cmd );
+					}
 					else
 						V->Exec( Colon + 1, *GLog );
 				}

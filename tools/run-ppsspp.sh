@@ -23,7 +23,9 @@ if [ $# -gt 0 ]; then echo "$*" > "$P/System/cmdline.txt"; else rm -f "$P/System
 sleep "$SECS"
 if [ -n "${SHOT:-}" ]; then
   # Capture the emulator window itself, wherever it is on screen.
-  WID=$("$HERE/tools/winid" 2>/dev/null)
+  W="$HERE/build-psp/winid"
+  [ -x "$W" ] || swiftc -O "$HERE/tools/winid.swift" -o "$W" 2>/dev/null
+  WID=$("$W" 2>/dev/null)
   if [ -n "$WID" ]; then screencapture -x -o -l "$WID" "$SHOT"; else screencapture -x "$SHOT"; fi
 fi
 pkill -f PPSSPPSDL 2>/dev/null; sleep 1

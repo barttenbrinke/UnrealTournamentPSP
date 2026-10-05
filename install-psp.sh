@@ -3,6 +3,7 @@
 # install-psp.sh -- put Unreal Tournament on a PSP Memory Stick (or PPSSPP).
 #
 # Usage: ./install-psp.sh <PSP/GAME directory> [EBOOT.PBP]
+#   (default: your build in build-psp/, else the EBOOT.PBP in this repository)
 #   ./install-psp.sh ~/.config/ppsspp/PSP/GAME      # PPSSPP
 #   ./install-psp.sh /Volumes/PSP/PSP/GAME          # Memory Stick
 #
@@ -14,6 +15,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GAMEDIR="${1:?usage: $0 <PSP/GAME directory> [EBOOT.PBP]}"
 EBOOT="${2:-$HERE/build-psp/UnrealTournament/EBOOT.PBP}"
+[ -f "$EBOOT" ] || EBOOT="$HERE/EBOOT.PBP"   # no local build: the committed one
 DEST="$GAMEDIR/UnrealTournament"
 ASSETS="$HERE/GAME_ASSETS"
 ISO="$HERE/GAME_ASSETS_SRC/UT99.iso"

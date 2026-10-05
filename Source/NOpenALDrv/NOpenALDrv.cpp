@@ -938,6 +938,7 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 	// that comes round again is re-read from its package.
 	// v400 lazy arrays: (re)read the module from its package.
 	Music->Data.Load();
+	debugf( NAME_Log, "PSPMUSIC: register %s, %d bytes", Music->GetName(), Music->Data.Num() );
 #endif
 	if( !Music->Data.Num() )
 		return;
@@ -986,6 +987,7 @@ void UNOpenALAudioSubsystem::RegisterMusic( UMusic* Music )
 
 	Music->Handle = (void*)1;
 	MusicIsLoaded = true;
+	debugf( NAME_Log, "PSPMUSIC: %s playing on the CPU at %d Hz %s", Music->GetName(), MusicRate, MusicMono ? "mono" : "stereo" );
 
 	unguard;
 }
@@ -1413,6 +1415,7 @@ void UNOpenALAudioSubsystem::PlayMusic()
 		return;
 	}
 #endif
+	debugf( NAME_Log, "PSPMUSIC: play section %d (loaded %d)", (INT)MusicSection, (INT)MusicIsLoaded );
 	alSourceStop(MusicSource);
 	ClearMusicBuffers();
 	xmp_set_position( MusicCtx, MusicSection );
@@ -1714,6 +1717,16 @@ void UNOpenALAudioSubsystem::UpdateMusicBuffers()
 	// If it stopped because it ran out of buffers, restart it
 	if( BuffersQueued > 0 && ( State == AL_INITIAL || State == AL_STOPPED ) )
 		alSourcePlay( MusicSource );
+#ifdef __PSP__
+	{
+		static INT Calls = 0;
+		if( ( ++Calls % 50 ) == 1 && Calls < 1000 )
+		{
+			ALfloat Gain = -1.f; alGetSourcef( MusicSource, AL_GAIN, &Gain );
+			debugf( NAME_Log, "PSPMUSIC: stream queued %d free %d state %04x gain %.2f alErr %04x", BuffersQueued, NumFreeMusicBuffers, State, Gain, alGetError() );
+		}
+	}
+#endif
 
 	unguard;
 }
@@ -1884,6 +1897,12 @@ void* UNOpenALAudioSubsystem::MusicThreadProc( void* Audio )
 #endif
 {
 	UNOpenALAudioSubsystem* This = (UNOpenALAudioSubsystem*)Audio;
+#ifdef __PSP__
+	// pthreads start at priority 60, below the main thread (32-36): on the
+	// PSP's strict-priority scheduler a busy frame would starve the music.
+	// It only renders a buffer every 100ms, so it can safely sit above.
+	sceKernelChangeThreadPriority( 0, 24 );
+#endif
 
 	while( This->MusicThreadRunning )
 	{

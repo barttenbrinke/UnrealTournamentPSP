@@ -272,6 +272,30 @@ static void MainLoop( UEngine* Engine )
 	guard(MainLoop);
 	check(Engine);
 
+#ifdef PLATFORM_PSP
+	// The PSP runs threads strictly by priority: a main loop that never
+	// yields starves the mixer and the music thread unless they sit above it.
+	// Log every thread's priority once, then lower the main thread by
+	// [PSP] MainThreadDrop (default 4; 0 leaves it). Lower number = higher.
+	{
+		SceUID Ids[64]; int Count = 0;
+		if( sceKernelGetThreadmanIdList( SCE_KERNEL_TMID_Thread, Ids, 64, &Count ) >= 0 )
+			for( int i = 0; i < Count; ++i )
+			{
+				SceKernelThreadInfo Info; appMemset( &Info, 0, sizeof(Info) ); Info.size = sizeof(Info);
+				if( sceKernelReferThreadStatus( Ids[i], &Info ) >= 0 )
+					debugf( NAME_Log, TEXT("PSPTHREAD: %-24s priority %3d stack %6dK"), Info.name, Info.currentPriority, (int)( Info.stackSize / 1024 ) );
+			}
+		INT Drop = 4;
+		GConfig->GetInt( TEXT("PSP"), TEXT("MainThreadDrop"), Drop );
+		const int Cur = sceKernelGetThreadCurrentPriority();
+		if( Drop > 0 && Cur + Drop < 120 )
+		{
+			sceKernelChangeThreadPriority( sceKernelGetThreadId(), Cur + Drop );
+			debugf( NAME_Log, TEXT("PSPTHREAD: main thread priority %d -> %d so audio threads preempt it"), Cur, sceKernelGetThreadCurrentPriority() );
+		}
+	}
+#endif
 	// Loop while running.
 	GIsRunning = 1;
 	DOUBLE OldTime = appSeconds();
@@ -342,6 +366,22 @@ static void MainLoop( UEngine* Engine )
 		// Enforce optional maximum tick rate.
 		guard(EnforceTickRate);
 		FLOAT MaxTickRate = Engine->GetMaxTickRate();
+#ifdef PLATFORM_PSP
+		// GetMaxTickRate() is 0 offline, so nothing ever sleeps; [PSP] MaxFPS
+		// caps the frame rate (steadier frames, and the CPU goes to the
+		// audio threads instead of frames nobody sees). 0 disables.
+		{
+			static INT PspMaxFPS = -1;
+			if( PspMaxFPS < 0 )
+			{
+				PspMaxFPS = 20;
+				GConfig->GetInt( TEXT("PSP"), TEXT("MaxFPS"), PspMaxFPS );
+				debugf( NAME_Log, TEXT("PSPPERF: frame cap = %i fps"), PspMaxFPS );
+			}
+			if( PspMaxFPS > 0 && ( MaxTickRate <= 0.f || MaxTickRate > PspMaxFPS ) )
+				MaxTickRate = PspMaxFPS;
+		}
+#endif
 		if( MaxTickRate>0.0 )
 		{
 			FLOAT Delta = (1.0/MaxTickRate) - (appSeconds()-OldTime);

@@ -648,6 +648,20 @@ void UGameEngine::NotifyLevelChange()
 //
 ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, const TMap<FString,FString>* TravelInfo, FString& Error )
 {
+#ifdef PLATFORM_PSP
+	// Level load timer and Memory Stick traffic, logged when this returns.
+	struct FPspLoadTimer
+	{
+		DOUBLE T0; INT B0, R0, S0;
+		FString Map;
+		FPspLoadTimer( const TCHAR* InMap ) : T0( appSeconds() ), B0( GPspIoBytes ), R0( GPspIoReads ), S0( GPspIoSeeks ), Map( InMap ) {}
+		~FPspLoadTimer()
+		{
+			debugf( NAME_Log, TEXT("PSPLOAD: %s in %.1f s: %i KB read in %i reads, %i seeks"), *Map, (FLOAT)( appSeconds() - T0 ),
+				( GPspIoBytes - B0 ) / 1024, GPspIoReads - R0, GPspIoSeeks - S0 );
+		}
+	} PspLoadTimer( *URL.Map );
+#endif
 	guard(UGameEngine::LoadMap);
 	Error = TEXT("");
 	debugf( NAME_Log, TEXT("LoadMap: %s"), *URL.String() );

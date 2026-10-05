@@ -35,6 +35,20 @@ struct FPspFile
 };
 
 CORE_API INT GPspPhase[PSPPH_Max];
+CORE_API INT GPspIoBytes = 0, GPspIoReads = 0, GPspIoSeeks = 0, GPspIoReopens = 0;
+
+CORE_API INT appPspFirstRefill()
+{
+	static INT Bytes = -1;
+	if( Bytes < 0 )
+	{
+		INT KB = 1;
+		if( GConfig ) GConfig->GetInt( TEXT("PSP"), TEXT("RefillKB"), KB );
+		Parse( appCmdLine(), TEXT("REFILLKB="), KB );
+		Bytes = Clamp( KB, 1, 16 ) * 1024;
+	}
+	return Bytes;
+}
 static FPspFile GPspFiles[PSP_MAX_FILES];
 static DWORD GPspUseClock = 0;
 
@@ -118,6 +132,7 @@ static UBOOL PspEnsureOpen( FPspFile* F )
 		PspEvictOne( F );
 	F->Fd = sceIoOpen( F->Path, PSP_O_RDONLY, 0777 );
 	F->FdPos = 0;
+	++GPspIoReopens;
 	return F->Fd >= 0;
 }
 
@@ -169,14 +184,17 @@ CORE_API INT appPspRead( FPspFile* F, INT Pos, void* Dest, INT Count )
 		if( sceIoLseek32( F->Fd, Pos, PSP_SEEK_SET ) != Pos )
 			return -1;
 		F->FdPos = Pos;
+		++GPspIoSeeks;
 	}
 	INT Got = 0;
 	while( Got < Count )
 	{
 		INT N = sceIoRead( F->Fd, (BYTE*)Dest + Got, Count - Got );
+		++GPspIoReads;
 		if( N <= 0 )
 			break;
 		Got += N;
+		GPspIoBytes += N;
 	}
 	F->FdPos += Got;
 	return Got;

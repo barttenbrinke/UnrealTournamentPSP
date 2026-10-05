@@ -22,6 +22,11 @@ CORE_API void appPspClose( FPspFile* F );
 // sceIoGetstat: size without spending a handle, -1 if missing.
 CORE_API INT appPspStatSize( const char* Path );
 
+// First read after a seek, in bytes ([PSP] RefillKB / -REFILLKB=, default 1).
+CORE_API INT appPspFirstRefill();
+// Memory Stick traffic since start: bytes read, sceIoRead calls, seeks, reopens.
+CORE_API extern INT GPspIoBytes, GPspIoReads, GPspIoSeeks, GPspIoReopens;
+
 // Profiling build (PSP_KEEP_UCLOCK): per-phase microseconds of the frame,
 // summed by UGameEngine::Draw and reported/reset by the GL driver.
 enum { PSPPH_World, PSPPH_Hud, PSPPH_Console, PSPPH_Unlock, PSPPH_Audio, PSPPH_Max };

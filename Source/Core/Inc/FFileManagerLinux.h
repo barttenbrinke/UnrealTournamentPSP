@@ -219,7 +219,7 @@ class FArchivePspReader : public FArchive
 {
 public:
 	FArchivePspReader( FPspFile* InFile, FOutputDevice* InError )
-	:	File( InFile ), Error( InError ), Size( appPspSize(InFile) ), Pos( 0 ), BufferBase( 0 ), BufferCount( 0 )
+	:	File( InFile ), Error( InError ), Size( appPspSize(InFile) ), Pos( 0 ), BufferBase( 0 ), BufferCount( 0 ), NextRefill( appPspFirstRefill() )
 	{
 		ArIsLoading = ArIsPersistent = 1;
 	}
@@ -228,10 +228,17 @@ public:
 		if( File )
 			Close();
 	}
+	// Memory Stick time follows bytes moved, not the number of reads (the
+	// Unreal port measured a level load at 14 s with 1 KB first reads and 24 s
+	// with 16 KB). So the first refill after a seek is small and doubles
+	// while the reads stay sequential.
 	void Precache( INT HintCount )
 	{
+		const UBOOL Sequential = ( Pos == BufferBase + BufferCount );
+		if( Sequential && BufferCount )
+			NextRefill = Min( NextRefill * 2, (INT)ARRAY_COUNT(Buffer) );
 		BufferBase  = Pos;
-		BufferCount = Min( (INT)ARRAY_COUNT(Buffer), Size-Pos );
+		BufferCount = Min( NextRefill, Size-Pos );
 		if( BufferCount > 0 && appPspRead( File, Pos, Buffer, BufferCount ) != BufferCount )
 		{
 			ArIsError = 1;
@@ -247,6 +254,7 @@ public:
 		{
 			BufferBase  = Pos;
 			BufferCount = 0;
+			NextRefill  = appPspFirstRefill();
 		}
 	}
 	INT Tell()
@@ -306,6 +314,7 @@ protected:
 	INT				Pos;
 	INT				BufferBase;
 	INT				BufferCount;
+	INT				NextRefill;
 	BYTE			Buffer[16384];
 };
 #endif

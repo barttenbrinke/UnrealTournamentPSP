@@ -382,6 +382,39 @@ static void MainLoop( UEngine* Engine )
 				Next = End ? End + 1 : NULL;
 			}
 		}
+		// -EXECEVERY=<secs>:<command>: repeat a command (soak tests, e.g.
+		// "-EXECEVERY=15:press_Joy10" keeps respawning the player).
+		{
+			static TCHAR Every[128] = TEXT("?");
+			static DOUBLE Period = 0.0, NextAt = 0.0;
+			if( Every[0] == '?' )
+			{
+				Every[0] = 0;
+				if( Parse( appCmdLine(), TEXT("EXECEVERY="), Every, ARRAY_COUNT(Every) ) && appStrchr( Every, ':' ) )
+				{
+					Period = appAtof( Every );
+					NextAt = appSeconds() + Period;
+					for( TCHAR* c = Every; *c; ++c ) if( *c == '_' ) *c = ' ';
+				}
+				else
+					Every[0] = 0;
+			}
+			if( Every[0] && Period > 0.0 && appSeconds() >= NextAt && Engine->Client && Engine->Client->Viewports.Num() )
+			{
+				NextAt += Period;
+				const TCHAR* Cmd = appStrchr( Every, ':' ) + 1;
+				UViewport* V = Engine->Client->Viewports(0);
+				EInputKey Key;
+				const TCHAR* Rest = Cmd;
+				if( ParseCommand( &Rest, TEXT("PRESS") ) && V->Input && V->Input->FindKeyName( Rest, Key ) )
+				{
+					Engine->InputEvent( V, Key, IST_Press );
+					Engine->InputEvent( V, Key, IST_Release );
+				}
+				else
+					V->Exec( Cmd, *GLog );
+			}
+		}
 #endif
 		if( GWindowManager )
 			GWindowManager->Tick( DeltaTime );

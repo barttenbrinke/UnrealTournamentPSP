@@ -262,6 +262,11 @@ else()
     # C++14 sized delete would bypass UE's global operator delete overrides
     # (UnFile.h) and hand appMalloc memory straight to free().
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-sized-deallocation>)
+    # UArrayProperty::DestroyValue calls ~FArray() explicitly and the C++
+    # destructor runs it again at delete; modern GCC drops ~FArray's
+    # "Data = NULL" as a dead store, so the second run frees the block twice
+    # (heap corruption on every level change with live decals).
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-lifetime-dse>)
     # Keep RA honest for PSPLink crash dumps and psp-addr2line.
     add_compile_options(-g -fno-optimize-sibling-calls)
     add_compile_options(-Wno-narrowing -Wno-register -fpermissive)

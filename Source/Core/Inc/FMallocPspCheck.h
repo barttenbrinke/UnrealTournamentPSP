@@ -51,6 +51,7 @@ class FMallocPspCheck : public FMalloc
 			if( H->Magic == HEAD_MAGIC )
 				debugf( NAME_Warning, TEXT("PSPHEAP: tail bytes %02x %02x %02x %02x %02x %02x %02x %02x"), T[0],T[1],T[2],T[3],T[4],T[5],T[6],T[7] );
 			Reported = 0;
+			*(volatile INT*)0 = 0;	// fault: PPSSPP / PSPLink then show the caller's stack
 		}
 		return 0;
 	}

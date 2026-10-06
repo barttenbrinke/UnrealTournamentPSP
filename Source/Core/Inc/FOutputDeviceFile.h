@@ -80,9 +80,18 @@ public:
 					WriteRaw( LINE_TERMINATOR );
 #endif
 #ifdef PLATFORM_PSP
-					// A PSP crash leaves nothing behind: get every line onto
-					// the stick (and to PSPLink's stdout) as it is written.
-					LogAr->Flush();
+					// A PSP crash leaves nothing behind, so problems go to the
+					// stick at once; routine lines at most every 2 seconds
+					// (each flush is a Memory Stick write).
+					{
+						static DOUBLE LastFlush = 0.0;
+						const DOUBLE Now = appSeconds();
+						if( Event == NAME_Warning || Event == NAME_Critical || Event == NAME_Exit || Event == NAME_Title || Now - LastFlush > 2.0 )
+						{
+							LogAr->Flush();
+							LastFlush = Now;
+						}
+					}
 #ifdef PSP_PSPLINK
 					printf( "%s: %s\n", FName::SafeString(Event), Data );
 #endif

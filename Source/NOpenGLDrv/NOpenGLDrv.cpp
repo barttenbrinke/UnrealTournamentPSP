@@ -730,7 +730,10 @@ void UNOpenGLRenderDevice::Lock( FPlane FlashScale, FPlane FlashFog, FPlane Scre
 				(FLOAT)( Elapsed * 10.0 ),
 				(unsigned)GPspUploadCount, (unsigned)( GPspUploadCount - GPspUploadLast ),
 				GPspTexBytes / 1024, TexAlloc.Num(), GPspUploadFailed, GPspRingWraps, PspHeapStr() );
-			if( Viewport && Viewport->Actor )
+			static INT PspDebug = -1;
+			if( PspDebug < 0 )
+				PspDebug = ParseParam( appCmdLine(), TEXT("PSPDEBUG") ) ? 1 : 0;
+			if( PspDebug && Viewport && Viewport->Actor )
 			{
 				APlayerPawn* PP = Viewport->Actor;
 				// Script-side values, read through the property system rather than

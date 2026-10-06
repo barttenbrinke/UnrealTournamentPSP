@@ -14,7 +14,7 @@ PPSSPP=/Applications/PPSSPPSDL.app/Contents/MacOS/PPSSPPSDL
 OUT="${TMPDIR:-/tmp}/ut-ppsspp.out"
 
 pkill -f PPSSPPSDL 2>/dev/null; sleep 1
-cp "$HERE/build-psp/UnrealTournament/EBOOT.PBP" "$P/EBOOT.PBP"
+cp "${EBOOT:-$HERE/build-psp/UnrealTournament/EBOOT.PBP}" "$P/EBOOT.PBP"   # EBOOT=other build
 rm -f "$P/System/UnrealTournament.log"
 # PPSSPP passes no argv beyond the EBOOT path; game switches go in a file the
 # launcher reads (System/cmdline.txt), if any were given.

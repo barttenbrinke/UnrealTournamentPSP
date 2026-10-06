@@ -1004,7 +1004,19 @@ ULevel* UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, const TMa
 		}
 		FString Error;
 		if( !GLevel->Listen( Error ) )
+#ifdef PLATFORM_PSP
+		{
+			// Networking is off on the PSP (IpDrv sockets are stubbed): a
+			// "LAN game" or a failed join that falls back to listening must
+			// not be fatal. Play the level offline instead.
+			if( Client )
+				debugf( NAME_Warning, TEXT("No network on the PSP: playing %s offline"), *URL.Map );
+			else
+				appErrorf( LocalizeError("ServerListen"), *Error );
+		}
+#else
 			appErrorf( LocalizeError("ServerListen"), *Error );
+#endif
 	}
 	unguard;
 

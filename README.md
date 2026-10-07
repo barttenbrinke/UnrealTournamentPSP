@@ -40,8 +40,9 @@ which PPSSPP does not emulate). A file `System/cmdline.txt` with a map URL, for 
 | L | fire | |
 | R | alt-fire (hold to charge) | |
 | R + tap L | jump | |
-| D-pad down | crouch | |
-| D-pad left / right | previous / next weapon | |
+| D-pad down | crouch | move the cursor |
+| D-pad left / right | previous / next weapon | move the cursor |
+| D-pad up | | move the cursor |
 | R + D-pad up | use selected item | |
 | R + D-pad left / right | previous / next item | |
 | Start | menu | close |
@@ -51,7 +52,12 @@ Auto-aim is on (as on the Dreamcast): shots bend toward a target within about 20
 the crosshair. Turn it off with `MyAutoAim=1.0` in `System/User.ini`, or invert the vertical look
 with `JoyY=Axis aLookUp speed=-0.5`. Auto-aim works offline at bot skill 2 or lower.
 
-In deathmatch you start waiting for the match: press L (fire) to begin.
+In deathmatch you start waiting for the match: press L (fire) to begin. Holding the stick fully
+left or right speeds the turn up after a moment, for turning round on the spot.
+
+To play a quick match, use **Game > Start Practice Session**, pick a map and press Start. The
+tournament ladder (**Start Unreal Tournament**) works too: its screens are made for 640x480, and the
+small red arrows at the bottom are Back and Next.
 
 ## Building
 

@@ -913,6 +913,11 @@ UBOOL UNSDLViewport::TickInput()
 					const UBOOL bIsInUI = PspInUWindow( (UObject*)Console );
 					const BYTE* JoyMap = bIsInUI ? JoyButtonMapUI : JoyButtonMap;
 #ifdef PLATFORM_PSP
+					// In the menus the D-pad moves the cursor (below) instead of
+					// sending arrow keys: UWindow's keyboard highlight is not what
+					// Cross clicks, so arrows could reach items but never select them.
+					if( bIsInUI && Ev.cbutton.button >= SDL_CONTROLLER_BUTTON_DPAD_UP && Ev.cbutton.button <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT )
+						break;
 					// R shift layer (in game only): R itself still fires its own
 					// binding (alt-fire, held to charge), and while it is down
 					// L, D-pad up, left and right report as other keys:
@@ -1006,12 +1011,27 @@ UBOOL UNSDLViewport::TickInput()
 		const FLOAT X = JoyAxis[SDL_CONTROLLER_AXIS_LEFTX] / 32767.f;
 		const FLOAT Y = JoyAxis[SDL_CONTROLLER_AXIS_LEFTY] / 32767.f;
 		// Square response: fine control near the centre, speed at the rim.
-		if( X ) CauseInputEvent( IK_MouseX, IST_Axis,  X * Abs(X) * Speed );
-		if( Y ) CauseInputEvent( IK_MouseY, IST_Axis, -Y * Abs(Y) * Speed );
+		FLOAT DX = X * Abs(X) * Speed, DY = -Y * Abs(Y) * Speed;
+#ifdef PLATFORM_PSP
+		// D-pad: steady cursor at about a third of full stick speed.
+		if( SDL_GameController* Pad = ((UNSDLClient*)GetOuterUClient())->GetController() )
+		{
+			const FLOAT Step = 250.f * DeltaTime;
+			DX += Step * ( SDL_GameControllerGetButton( Pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT ) - SDL_GameControllerGetButton( Pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT ) );
+			DY += Step * ( SDL_GameControllerGetButton( Pad, SDL_CONTROLLER_BUTTON_DPAD_UP ) - SDL_GameControllerGetButton( Pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN ) );
+		}
+#endif
+		if( DX ) CauseInputEvent( IK_MouseX, IST_Axis, DX );
+		if( DY ) CauseInputEvent( IK_MouseY, IST_Axis, DY );
 		InputUpdateTime = CurTime;
 		return QuitRequested;
 	}
 
+#ifdef PLATFORM_PSP
+	static FLOAT FullTilt = 0.f;   // seconds the stick has been at full turn
+	if( !JoyAxis[SDL_CONTROLLER_AXIS_LEFTX] )
+		FullTilt = 0.f;
+#endif
 	// Constantly hammer the input system with axis events for axes that are not zero.
 	for ( INT i = 0; i < SDL_CONTROLLER_AXIS_MAX; ++i )
 	{
@@ -1024,6 +1044,16 @@ UBOOL UNSDLViewport::TickInput()
 			Scale *= JoyAxisDefaultScale[i] * DeltaTime;
 			if ( ( Client->InvertV && Key == IK_JoyV ) || ( Client->InvertY && Key == IK_JoyY ) )
 				Scale = -Scale;
+#ifdef PLATFORM_PSP
+			// Turn acceleration (as console shooters do): fine aim with the
+			// stick part-way, and after a moment at full tilt the turn ramps
+			// up to 2.5x so turning round on the spot does not crawl.
+			if( Key == IK_JoyX )
+			{
+				FullTilt = Abs( FltValue ) > 0.9f ? FullTilt + DeltaTime : 0.f;
+				Scale *= 1.f + 1.5f * Clamp( ( FullTilt - 0.15f ) / 0.5f, 0.f, 1.f );
+			}
+#endif
 			CauseInputEvent( Key, IST_Axis, FltValue * Scale );
 		}
 	}

@@ -31,6 +31,7 @@ IMPLEMENT_CLASS(URender);
 DWORD 								URender::Stamp;
 FMemStack							URender::VectorMem;
 URender::FStampedPoint*				URender::PointCache;
+INT									URender::PointCacheSize;
 URender::FDynamicsCache*			URender::DynamicsCache;
 INT									URender::NumDynLightSurfs;
 INT									URender::NumDynLightLeaves;
@@ -125,6 +126,7 @@ void URender::Init( UEngine* InEngine )
 	// Caches.
 	for( INT i=0; i<MAX_POINTS;  i++ )
 		PointCache [i].Stamp = Stamp;
+	PointCacheSize = MAX_POINTS;
 	VectorMem.Init( 16384 );
 
 	// Init stats.
@@ -1927,7 +1929,22 @@ void URender::OccludeBsp( FSceneNode* Frame )
 	BYTE                ActiveZones[64];
 	guard(URender::OccludeBsp);
 	check(Frame->Level->Model->Nodes.Num()<=MAX_NODES);
+#ifdef PLATFORM_PSP
+	// Stock maps go past MAX_POINTS (DM-Barricade); grow the point cache to
+	// the level instead of paying for the worst case on every map. Entries
+	// start at the current stamp, which the Stamp++ below makes stale.
+	if( Frame->Level->Model->Points.Num() > PointCacheSize )
+	{
+		delete PointCache;
+		PointCacheSize = Align( Frame->Level->Model->Points.Num(), 1024 );
+		PointCache = new(TEXT("FStampedPoint"))FStampedPoint[PointCacheSize];
+		for( INT i=0; i<PointCacheSize; i++ )
+			PointCache[i].Stamp = Stamp;
+		debugf( NAME_Log, TEXT("PSPPERF: point cache grown to %i points"), PointCacheSize );
+	}
+#else
 	check(Frame->Level->Model->Points.Num()<=MAX_POINTS);
+#endif
 
 	// If unrenderable.
 	Model = Frame->Level->Model;

@@ -515,6 +515,7 @@ class RENDER_API URender : public URenderBase
 		FTransform* Point;
 		DWORD		Stamp;
 	}* PointCache;
+	static INT PointCacheSize;
 	static FMemStack VectorMem;
 	static DWORD Stamp;
 	INT						NumPostDynamics;

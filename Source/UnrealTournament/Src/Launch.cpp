@@ -318,7 +318,7 @@ static void MainLoop( UEngine* Engine )
 		// -EXECAT=<secs>:<command>[;<secs>:<command>...]: scripted console
 		// commands for unattended test runs ("-EXECAT=30:fire;40:shot").
 		{
-			static TCHAR Script[256] = TEXT("?");
+			static TCHAR Script[1024] = TEXT("?");
 			static TCHAR* Next = NULL;
 			static DOUBLE Start = 0.0;
 			if( Script[0] == '?' )
@@ -349,6 +349,40 @@ static void MainLoop( UEngine* Engine )
 					{
 						Engine->InputEvent( V, Key, IST_Press );
 						Engine->InputEvent( V, Key, IST_Release );
+					}
+					// "mouse <dx> <dy>": move the menu cursor (UWindow scales by 0.6).
+					else if( ParseCommand( &Cmd, TEXT("MOUSE") ) )
+					{
+						const FLOAT DX = appAtof( Cmd );
+						const TCHAR* Sp = appStrchr( Cmd, ' ' );
+						const FLOAT DY = Sp ? appAtof( Sp + 1 ) : 0.f;
+						if( DX ) Engine->InputEvent( V, IK_MouseX, IST_Axis, DX );
+						if( DY ) Engine->InputEvent( V, IK_MouseY, IST_Axis, DY );
+					}
+					// "findstr <text>": log every class default string holding <text>
+					// (which Class.Property to override in an .int file).
+					else if( ParseCommand( &Cmd, TEXT("FINDSTR") ) )
+					{
+						for( TObjectIterator<UClass> It; It; ++It )
+						{
+							if( !It->Defaults.Num() )
+								continue;
+							for( TFieldIterator<UStrProperty> P(*It); P; ++P )
+								if( P->GetOwnerClass() == *It )
+									for( INT i = 0; i < P->ArrayDim; i++ )
+									{
+										FString* Str = (FString*)( &It->Defaults(0) + P->Offset + i * P->ElementSize );
+										if( appStrfind( **Str, Cmd ) )
+											debugf( NAME_Log, TEXT("PSPEXEC: %s.%s[%i]%s = '%s'"), It->GetPathName(), P->GetName(), i,
+												( P->PropertyFlags & CPF_Localized ) ? TEXT(" (localized)") : TEXT(""), **Str );
+									}
+						}
+					}
+					// "shot <label>": System/shot-<label>.ppm of the next frame.
+					else if( ParseCommand( &Cmd, TEXT("SHOT") ) )
+					{
+						extern char GPspShotNow[64];
+						appStrncpy( GPspShotNow, Cmd, 64 );
 					}
 					// "dumptex <Package.Texture>": write its top mip (palettised)
 					// as System/<Texture>.ppm -- for making the XMB icon.

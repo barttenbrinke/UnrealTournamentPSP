@@ -150,6 +150,7 @@ static INT GPspUpFirst = 0, GPspUpRealtime = 0, GPspUpBig = 0;   // per report i
 static INT GPspUpBytes = 0;                                       // bytes handed to GL per interval
 #include <pspsysmem.h>
 #include <pspdisplay.h>   // -SHOTAT reads the displayed framebuffer
+char GPspShotNow[64];   // label of a shot requested from the launcher
 #include <pspthreadman.h>   // per-thread run clocks in the PSPPERF report
 // Heap picture for the log: newlib arena in use / free, plus what the kernel
 // still has outside the heap. Cheap; used in periodic reports and on failures.
@@ -865,8 +866,14 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	// frame back and write System/shot-<label>.ppm. Same picture in PPSSPP and
 	// on the card, so render changes can be pixel-compared without a camera
 	// or a screen-capture that lands on the wrong display.
+	// The launcher's "-EXECAT=secs:shot_<label>" sets GPspShotNow for more shots.
 	{
 		static INT ShotAt = -2; static char ShotName[64];
+		if( GPspShotNow[0] )
+		{
+			appStrcpy( ShotName, GPspShotNow ); GPspShotNow[0] = 0;
+			ShotAt = 1;
+		}
 		if( ShotAt == -2 )
 		{
 			ShotAt = -1; INT At = 0;

@@ -36,6 +36,11 @@ for d in System Maps Textures Sounds Music; do
 done
 mkdir -p "$DEST/Save"
 cp "$HERE/Config/PSP/UnrealTournament.ini" "$HERE/Config/PSP/User.ini" "$DEST/System/"
+# PSP wording for prompts that name keyboard keys ("Press ESC to begin"):
+# appended to the CD's localization files, which rsync above restored.
+for f in "$HERE"/Config/PSP/Localization/*.int; do
+  chmod u+w "$DEST/System/$(basename "$f")" && cat "$f" >> "$DEST/System/$(basename "$f")"
+done
 cp "$EBOOT" "$DEST/EBOOT.PBP"
 rm -f "$DEST/System/UnrealTournament.log"
 # PPSSPP has no Media Engine: the ME start-up never returns there, so an

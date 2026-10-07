@@ -39,6 +39,7 @@ CORE_API INT GPspPhase[PSPPH_Max];
 CORE_API INT GPspIoBytes = 0, GPspIoReads = 0, GPspIoSeeks = 0, GPspIoReopens = 0;
 CORE_API INT GPspSeekHist[6];
 CORE_API INT GPspIoOpenUs = 0, GPspIoReadUs = 0;
+CORE_API INT GPspNearPass = 0;
 CORE_API DOUBLE GPspLoadChildTime = 0.0;
 CORE_API DOUBLE GPspLoadPhase[4];
 struct FPspClassTime { UClass* Class; DOUBLE Seconds; INT Count; INT Bytes; };

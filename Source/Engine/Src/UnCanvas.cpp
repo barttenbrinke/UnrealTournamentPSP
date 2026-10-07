@@ -564,9 +564,18 @@ void UCanvas::execDrawActor( FFrame& Stack, RESULT_DECL )
 	if( WireFrame )
 		Viewport->Actor->RendMap = REN_Wire;
 	Actor->bHidden = 0;
+#ifdef PLATFORM_PSP
+	// The weapon sits closer than the world's near plane: draw it in its own
+	// depth range (see GPspNearPass). It no longer pokes into walls.
+	GPspNearPass = 1;
+	Viewport->RenDev->ClearZ( Frame );
+	Render->DrawActor( Frame, Actor );
+	GPspNearPass = 0;
+#else
 	if( ClearZ )
 		Viewport->RenDev->ClearZ( Frame );
 	Render->DrawActor( Frame, Actor );
+#endif
 #ifdef PLATFORM_PSP
 	{
 		static INT Logged = 0;

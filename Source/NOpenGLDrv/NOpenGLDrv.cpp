@@ -960,6 +960,102 @@ void UNOpenGLRenderDevice::Unlock( UBOOL Blit )
 	unguard;
 }
 
+#ifdef __PSP__
+// The GE does not clip at the sides of the screen: a triangle with a vertex
+// beyond its 4096-pixel coordinate space (about 2000 px from the centre of
+// the 480x272 screen) is thrown away whole. UT hands BSP polygons over
+// unclipped, so at sniper zoom (FOV 10-30, scale x3-x10) big walls and
+// floors that are partly on screen vanished and popped back as you moved.
+// Polygons that reach past a guard band are clipped to it here, in camera
+// space; BSP texture coordinates come from the position, so new points need
+// nothing else. Everything inside the band (nearly all of it) is untouched.
+enum { PSP_CLIP_PTS = 2048, PSP_CLIP_POLY_BYTES = 16384 };
+// Near plane ([PSP] NearZ, in tenths of a unit; default 40 = 4 units, the
+// PC uses 1). The depth buffer is 16-bit, and its precision at distance d is
+// about d*d / (near * 65536): at 1 unit coplanar detail sheets (CTF-Face's
+// carved panels) z-fight in stripes. The first-person weapon is closer than
+// 4 units, so UCanvas::DrawActor draws it with 1 (GPspNearPass).
+static FLOAT PspNearZ()
+{
+	static FLOAT Near = 0.f;
+	if( Near == 0.f )
+	{
+		INT Tenths = 40;
+		GetConfigInt( "PSP", "NearZ", Tenths );
+		Near = Max( Tenths, 1 ) * 0.1f;
+		debugf( NAME_Log, "PSPPERF: near plane %.1f", Near );
+	}
+	return Near;
+}
+static FTransform GPspClipPts[PSP_CLIP_PTS];
+static BYTE GPspClipPolys[PSP_CLIP_POLY_BYTES];
+
+static FSavedPoly* PspGuardClip( FSavedPoly* Polys, FLOAT Kx, FLOAT Ky )
+{
+	const FLOAT Near = PspNearZ();
+	UBOOL Outside = 0;
+	for( FSavedPoly* Poly = Polys; Poly && !Outside; Poly = Poly->Next )
+		for( INT i = 0; i < Poly->NumPts; i++ )
+		{
+			const FVector& P = Poly->Pts[i]->Point;
+			if( P.Z < Near || Abs( P.X ) > Kx * P.Z || Abs( P.Y ) > Ky * P.Z )
+				{ Outside = 1; break; }
+		}
+	if( !Outside )
+		return Polys;
+
+	// Planes as a*X + b*Y + c*Z + d >= 0: left, right, top, bottom, near.
+	const FLOAT Planes[5][4] = { { 1, 0, Kx, 0 }, { -1, 0, Kx, 0 }, { 0, 1, Ky, 0 }, { 0, -1, Ky, 0 }, { 0, 0, 1, -Near } };
+	INT UsedPts = 0, UsedBytes = 0;
+	FSavedPoly* Head = NULL;
+	FSavedPoly** Link = &Head;
+	for( FSavedPoly* Poly = Polys; Poly; Poly = Poly->Next )
+	{
+		enum { MAXV = 32 };
+		FVector A[MAXV], B[MAXV];
+		INT N = Min( Poly->NumPts, (INT)MAXV );
+		for( INT i = 0; i < N; i++ )
+			A[i] = Poly->Pts[i]->Point;
+		for( INT p = 0; p < 5 && N >= 3; p++ )
+		{
+			const FLOAT* Pl = Planes[p];
+			INT M = 0;
+			for( INT i = 0; i < N; i++ )
+			{
+				const FVector& P0 = A[i];
+				const FVector& P1 = A[ ( i + 1 ) % N ];
+				const FLOAT D0 = Pl[0] * P0.X + Pl[1] * P0.Y + Pl[2] * P0.Z + Pl[3];
+				const FLOAT D1 = Pl[0] * P1.X + Pl[1] * P1.Y + Pl[2] * P1.Z + Pl[3];
+				if( D0 >= 0.f && M < MAXV )
+					B[M++] = P0;
+				if( ( D0 >= 0.f ) != ( D1 >= 0.f ) && M < MAXV )
+					B[M++] = P0 + ( P1 - P0 ) * ( D0 / ( D0 - D1 ) );
+			}
+			N = M;
+			for( INT i = 0; i < N; i++ )
+				A[i] = B[i];
+		}
+		if( N < 3 )
+			continue;
+		const INT Bytes = sizeof(FSavedPoly) + N * sizeof(FTransform*);
+		if( UsedPts + N > PSP_CLIP_PTS || UsedBytes + Bytes > PSP_CLIP_POLY_BYTES )
+			break;   // out of scratch: drop the rest of this surface for one frame
+		FSavedPoly* Out = (FSavedPoly*)( GPspClipPolys + UsedBytes );
+		UsedBytes += Align( Bytes, 4 );
+		Out->Next = NULL; Out->iNode = Poly->iNode; Out->User = Poly->User; Out->NumPts = N;
+		for( INT i = 0; i < N; i++ )
+		{
+			FTransform* T = &GPspClipPts[UsedPts++];
+			T->Point = A[i];
+			Out->Pts[i] = T;
+		}
+		*Link = Out;
+		Link = &Out->Next;
+	}
+	return Head;
+}
+#endif
+
 void UNOpenGLRenderDevice::DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet )
 {
 	guard(UNOpenGLRenderDevice::DrawComplexSurface);
@@ -967,6 +1063,17 @@ void UNOpenGLRenderDevice::DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& 
 	check(Surface.Texture);
 
 	SetSceneNode( Frame );
+
+#ifdef __PSP__
+	// 1500 px from the centre leaves margin inside the GE's limit.
+	FSavedPoly* const SavedPolys = Facet.Polys;
+	Facet.Polys = PspGuardClip( Facet.Polys, 1500.f * RFX2, 1500.f * RFY2 );
+	if( !Facet.Polys )
+	{
+		Facet.Polys = SavedPolys;
+		return;
+	}
+#endif
 
 	uclock(ComplexCycles);
 
@@ -983,6 +1090,9 @@ void UNOpenGLRenderDevice::DrawComplexSurface( FSceneNode* Frame, FSurfaceInfo& 
 
 	uunclock(ComplexCycles);
 
+#ifdef __PSP__
+	Facet.Polys = SavedPolys;
+#endif
 	unguard;
 }
 
@@ -2371,6 +2481,16 @@ void UNOpenGLRenderDevice::SetSceneNode( FSceneNode* Frame )
 		CurrentSceneNode.SizeY = Viewport->SizeY;
 	}
 
+#ifdef __PSP__
+	static FLOAT CurrentNear = 0.f;
+	const FLOAT N = GPspNearPass ? 1.f : PspNearZ();
+	if( N != CurrentNear )
+	{
+		PspFlushBatch();   // batched vertices belong to the old projection
+		CurrentNear = N;
+		CurrentSceneNode.FX = -1.f;
+	}
+#endif
 	if( Frame->FX != CurrentSceneNode.FX || Frame->FY != CurrentSceneNode.FY ||
 			Viewport->Actor->FovAngle != CurrentSceneNode.FovAngle )
 	{
@@ -2380,7 +2500,11 @@ void UNOpenGLRenderDevice::SetSceneNode( FSceneNode* Frame )
 		RFY2 = 2.0f * RProjZ * Aspect / Frame->FY;
 		glMatrixMode( GL_PROJECTION );
 		glLoadIdentity();
+#ifdef __PSP__
+		glFrustum( -RProjZ * N, +RProjZ * N, -Aspect * RProjZ * N, +Aspect * RProjZ * N, N, 65336.0 );
+#else
 		glFrustum( -RProjZ, +RProjZ, -Aspect * RProjZ, +Aspect * RProjZ, 1.0, 65336.0 );
+#endif
 		CurrentSceneNode.FX = Frame->FX;
 		CurrentSceneNode.FY = Frame->FY;
 		CurrentSceneNode.FovAngle = Viewport->Actor->FovAngle;

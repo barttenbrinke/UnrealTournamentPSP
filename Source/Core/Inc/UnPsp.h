@@ -41,6 +41,11 @@ CORE_API void appPspLoadClassTime( class UClass* Class, DOUBLE Seconds, INT Byte
 CORE_API void appPspLoadClassReport( INT Top );
 CORE_API void appPspPostLoadClassTime( class UClass* Class, DOUBLE Seconds );
 
+// Set by UCanvas::DrawActor while it draws the first-person weapon: the GL
+// driver projects that pass with a 1-unit near plane (the world uses a
+// farther one for depth precision) after clearing the depth buffer.
+CORE_API extern INT GPspNearPass;
+
 // Profiling build (PSP_KEEP_UCLOCK): per-phase microseconds of the frame,
 // summed by UGameEngine::Draw and reported/reset by the GL driver.
 enum { PSPPH_World, PSPPH_Hud, PSPPH_Console, PSPPH_Unlock, PSPPH_Audio, PSPPH_Max };

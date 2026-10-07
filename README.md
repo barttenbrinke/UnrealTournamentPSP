@@ -1,5 +1,7 @@
 # Unreal Tournament (UT99) on the PSP
 
+![Unreal Tournament running on a PSP](docs/psp.jpg)
+
 A port of the original *Unreal Tournament* (v400) to the PSP-2000 and later models, from a homebrew
 EBOOT. It is early work: it boots, loads deathmatch and CTF maps with bots, and has sound and music,
 but so far it has mostly been tested in the PPSSPP emulator. Expect bugs, and expect it to be slower

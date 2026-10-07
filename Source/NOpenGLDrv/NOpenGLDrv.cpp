@@ -1182,6 +1182,7 @@ static QWORD GPspBatchTex   = 0;
 static DWORD GPspBatchFlags = 0;
 static const FSceneNode* GPspBatchFrame = NULL;
 static UBOOL GPspBatchTile  = 0;      // the open batch is canvas tiles (depth test off, see DrawTile)
+static UBOOL GPspBatchClamp = 0;      // ...drawn with edge clamping (tiles inside their texture)
 
 static void PspFlushBatch()
 {
@@ -1196,6 +1197,12 @@ static void PspFlushBatch()
 	{
 		glEnable( GL_DEPTH_TEST );   // tiles ran with it off
 		GPspBatchTile = 0;
+	}
+	if( GPspBatchClamp )
+	{
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT );
+		GPspBatchClamp = 0;
 	}
 }
 
@@ -2122,7 +2129,13 @@ void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, F
 		uclock(TileCycles);
 		const UBOOL Modulated = ( PolyFlags & PF_Modulated );
 		const UBOOL Realtime  = Texture.bRealtimeChanged;
-		if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime || !GPspBatchTile ) )
+		// A tile that stays inside its texture clamps at the edges: with
+		// bilinear filtering and the default wrap, the GE blends a tile's
+		// border with the opposite side of the texture, which drew seams
+		// through the tiled menu logo. Tiles that repeat a texture on
+		// purpose (UV past its size) keep wrapping.
+		const UBOOL Clamp = U >= 0.f && V >= 0.f && U + UL <= Texture.USize + 0.01f && V + VL <= Texture.VSize + 0.01f;
+		if( GPspBatchOpen && ( Texture.CacheID != GPspBatchTex || PolyFlags != GPspBatchFlags || Frame != GPspBatchFrame || Realtime || !GPspBatchTile || Clamp != GPspBatchClamp ) )
 			PspFlushBatch();
 		if( !GPspBatchOpen )
 		{
@@ -2136,6 +2149,12 @@ void UNOpenGLRenderDevice::DrawTile( FSceneNode* Frame, FTextureInfo& Texture, F
 			if( !TileDepth ) glDisable( GL_DEPTH_TEST );
 			GPspBatchOpen  = 1;
 			GPspBatchTile  = 1;
+			if( Clamp )
+			{
+				glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+				glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+				GPspBatchClamp = 1;
+			}
 			GPspBatchTex   = Texture.CacheID;
 			GPspBatchFlags = PolyFlags;
 			GPspBatchFrame = Frame;
